@@ -4,14 +4,16 @@
 
 # Vastdeck
 
-**Every Claude Code session from every workspace on your machine, in one window.**
+**Every AI CLI session from every workspace on your machine, in one window.**
 
 Reopen one in a terminal, see which are running, delete the ones you are done
 with — and get them back if you change your mind.
 
+Claude Code today · Codex and Antigravity next
+
 Windows · [Tauri 2](https://tauri.app) · MIT
 
-<img src="docs/screenshot.png" alt="Vastdeck listing Claude Code sessions grouped by workspace" width="900">
+<img src="docs/screenshot.png" alt="Vastdeck listing sessions grouped by workspace" width="900">
 
 </div>
 
@@ -19,14 +21,18 @@ Windows · [Tauri 2](https://tauri.app) · MIT
 
 ## Why
 
-Claude Code keeps every conversation on disk, one file per session, in a folder
-named after the workspace. After a few months that is hundreds of files across
-dozens of projects, and the only way in is `claude --resume` from inside the
-right directory — which means remembering which directory that was.
+AI coding CLIs keep every conversation on disk, one file per session, in a
+folder named after the workspace. After a few months that is hundreds of files
+across dozens of projects, and the only way back into one is a resume command
+run from inside the right directory — which means remembering which directory
+that was.
 
-Vastdeck reads that folder and shows you the whole thing: what the session was
+Vastdeck reads those folders and shows you the whole thing: what the session was
 about, where it lives, when you last touched it, whether it is running right
 now. One click reopens it in a terminal.
+
+Claude Code is the CLI it reads today. The provider layer is a Rust trait, so
+Codex CLI and Antigravity CLI are additions rather than rewrites.
 
 ## What it does
 
@@ -43,9 +49,6 @@ now. One click reopens it in a terminal.
 - **Tray and startup** — close to the notification area, launch at login.
 - **Fast on a large history** — 400 MB of transcripts list in well under a
   second. See [How it works](#how-it-works).
-
-Only Claude Code is supported today. The provider layer is a Rust trait, so
-Codex CLI and Antigravity CLI are additions rather than rewrites.
 
 ## Install
 
