@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/logo.png" alt="" width="96" height="96">
+
 # Vastdeck
 
 **Every Claude Code session from every workspace on your machine, in one window.**
