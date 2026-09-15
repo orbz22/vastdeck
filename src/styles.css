@@ -1,0 +1,150 @@
+@import "tailwindcss";
+
+/* Dark is the default; light only when the OS or the user asks for it.
+   Every token is defined here as a plain custom property so the theme can be
+   swapped at runtime, then surfaced to Tailwind through @theme below. */
+:root {
+  --bg: #0b0b0d;
+  --surface: #111114;
+  --elevated: #17171b;
+  --raised: #1d1d22;
+  --border: #232328;
+  --border-strong: #2e2e35;
+  --text: #e9e9ec;
+  --text-muted: #8e8e97;
+  --text-faint: #5e5e68;
+  --invert-bg: #ececef;
+  --invert-text: #121215;
+  --focus: #5b8def;
+  --warn: #d9a441;
+  --warn-soft: #2a2115;
+  --live-idle: #3fb950;
+  --live-busy: #d9a441;
+  --danger: #e5534b;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --bg: #fbfbfc;
+  --surface: #ffffff;
+  --elevated: #f5f5f7;
+  --raised: #eeeef1;
+  --border: #e3e3e8;
+  --border-strong: #d2d2da;
+  --text: #17171a;
+  --text-muted: #6b6b75;
+  --text-faint: #9a9aa4;
+  --invert-bg: #17171a;
+  --invert-text: #fafafb;
+  --focus: #3b6fd4;
+  --warn: #a5720f;
+  --warn-soft: #fdf5e4;
+  --live-idle: #1f8b3a;
+  --live-busy: #a5720f;
+  --danger: #c2372f;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-elevated: var(--elevated);
+  --color-raised: var(--raised);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+  --color-invert: var(--invert-bg);
+  --color-invert-ink: var(--invert-text);
+  --color-focus: var(--focus);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-live-idle: var(--live-idle);
+  --color-live-busy: var(--live-busy);
+  --color-danger: var(--danger);
+
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  /* The whole window is chrome we drew ourselves; text selection in it reads as a bug. */
+  user-select: none;
+  cursor: default;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+input {
+  font: inherit;
+  color: inherit;
+  user-select: text;
+}
+
+button {
+  font: inherit;
+  cursor: default;
+}
+
+@keyframes vd-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.vd-pulse {
+  animation: vd-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes vd-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.vd-rise {
+  animation: vd-rise 140ms ease-out;
+}
