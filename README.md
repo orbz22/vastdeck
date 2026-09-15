@@ -67,6 +67,17 @@ rather verify it yourself.
 You also need [Claude Code](https://claude.com/claude-code); Vastdeck finds
 `claude` on your `PATH`, or you can point at it in Settings.
 
+### Updating
+
+Settings → System shows the version you are on and checks this repository for a
+newer one. An installed copy downloads the installer, verifies it against a
+signing key compiled into the build, and runs it — nothing installs unless that
+signature matches.
+
+Portable copies are not updated in place: the updater works by running an
+installer and a portable folder has nothing to install into, so it offers the
+release page instead.
+
 ### Portable mode
 
 The portable zip contains a `portable.txt` beside the executable. That file is
@@ -224,6 +235,20 @@ src/
 
 Run the tests with `cd src-tauri && cargo test`. The scanner test runs against
 whatever is in your own `~/.claude` and skips cleanly if there is nothing there.
+
+Releases are built with `npm run app:release`, which produces the installers, the
+portable zip, and `latest.json`. That last step needs the updater signing key:
+
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY_PATH = "path\to\updater.key"
+npm run app:release
+```
+
+Without the key the build still succeeds but produces no `.sig`, and
+`make-latest-json.mjs` refuses rather than publishing an update nobody can
+install. The public half of the pair lives in `tauri.conf.json`; the private half
+must never reach the repository, because anyone holding it can push an update to
+every user.
 
 `CLAUDE_CONFIG_DIR` overrides which directory Vastdeck reads, which is the way
 to work on it — or take a screenshot — without your own conversations on screen:

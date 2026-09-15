@@ -217,6 +217,23 @@ fn data_location() -> Result<(String, bool), String> {
     Ok((dir.to_string_lossy().into_owned(), paths::is_portable()))
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppInfo {
+    version: String,
+    /// The updater works by running an installer, which a portable copy has no
+    /// business doing — so the UI offers the release page instead.
+    portable: bool,
+}
+
+#[tauri::command]
+fn app_info(app: tauri::AppHandle) -> AppInfo {
+    AppInfo {
+        version: app.package_info().version.to_string(),
+        portable: paths::is_portable(),
+    }
+}
+
 /// Records that the user has accepted skip-permissions for this workspace, so
 /// the confirmation is asked once rather than every launch.
 #[tauri::command]
@@ -319,6 +336,8 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             tray::show_main_window(app);
         }))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
@@ -373,6 +392,7 @@ pub fn run() {
             purge_all_deleted,
             get_settings,
             data_location,
+            app_info,
             set_settings,
             trust_workspace,
             open_path,

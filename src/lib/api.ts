@@ -50,6 +50,11 @@ export interface ProviderInfo {
   sessionCount: number;
 }
 
+export interface AppInfo {
+  version: string;
+  portable: boolean;
+}
+
 export interface DeletedSession {
   backupDir: string;
   sessionId: string;
@@ -112,6 +117,7 @@ export const api = {
   getSettings: () => invoke<Settings>("get_settings"),
   /** Returns `[directory, isPortable]`. */
   dataLocation: () => invoke<[string, boolean]>("data_location"),
+  appInfo: () => invoke<AppInfo>("app_info"),
   setSettings: (settings: Settings) =>
     invoke<void>("set_settings", { settings }),
   trustWorkspace: (workspace: string) =>

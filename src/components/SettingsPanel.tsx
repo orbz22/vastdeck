@@ -7,6 +7,7 @@ import {
   type TerminalChoice,
 } from "../lib/api";
 import { CloseIcon, WarnIcon } from "./Icons";
+import UpdateRow from "./UpdateRow";
 
 const TERMINALS: { id: TerminalChoice; label: string }[] = [
   { id: "auto", label: "Auto (Windows Terminal → pwsh → powershell → cmd)" },
@@ -143,6 +144,7 @@ export default function SettingsPanel({
           </Section>
 
           <Section title="System">
+            <UpdateRow />
             <Toggle
               label="Close to the system tray"
               hint="Closing hides the window instead of quitting. Click the tray icon to bring it back, or quit from its menu."
