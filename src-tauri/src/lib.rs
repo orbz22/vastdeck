@@ -373,6 +373,15 @@ pub fn run() {
                 tray::show_main_window(&handle);
             }
 
+            // A window created hidden misses the scale factor of the monitor it
+            // will appear on, so on a display at anything but 100% it comes up
+            // sized in physical pixels and the layout overflows its own frame.
+            // Restating the size in logical units once, after the window exists,
+            // puts it back to what tauri.conf.json asks for.
+            if let Some(window) = handle.get_webview_window("main") {
+                let _ = window.set_size(tauri::LogicalSize::new(1080.0, 720.0));
+            }
+
             spawn_watcher(handle.clone());
             spawn_live_poller(handle);
             Ok(())

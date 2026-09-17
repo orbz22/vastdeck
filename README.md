@@ -31,8 +31,9 @@ Vastdeck reads those folders and shows you the whole thing: what the session was
 about, where it lives, when you last touched it, whether it is running right
 now. One click reopens it in a terminal.
 
-Claude Code is the CLI it reads today. The provider layer is a Rust trait, so
-Codex CLI and Antigravity CLI are additions rather than rewrites.
+Claude Code is the CLI it reads today. Session discovery, launch arguments and
+deletion all live in their own Rust modules, so Codex CLI and Antigravity CLI
+are a matter of generalising those seams rather than rewriting the app.
 
 ## What it does
 
@@ -106,8 +107,9 @@ with Windows 11.
 ## Privacy
 
 Vastdeck reads and writes files in your own Claude Code directory and nothing
-else. There is no telemetry, no account, no network call — the app makes no
-outbound requests at all. Your conversations never leave the machine.
+else. There is no telemetry and no account. The only outbound request it ever
+makes is the update check in Settings → System, and only when you press
+**Check**. Your conversations never leave the machine.
 
 ## How it works
 
@@ -204,7 +206,7 @@ is actually running.
 
 ### Notes for anyone hacking on it
 
-Three Windows details cost real time to find, so they are worth stating plainly:
+Four details cost real time to find, so they are worth stating plainly:
 
 - `data-tauri-drag-region` must not wrap the window buttons. Tauri swallows
   `mousedown` anywhere inside a drag-region subtree to begin moving the window,
@@ -217,6 +219,11 @@ Three Windows details cost real time to find, so they are worth stating plainly:
   registered before every other plugin. Two copies each hold their own settings
   in memory and the last one to save wins, quietly resurrecting values the other
   had changed — besides fighting over the tray icon and the Run key.
+- The WebView's own right-click menu offers Reload, Save as and Inspect, none of
+  which mean anything in a window that is not a browser. `App` cancels
+  `contextmenu` everywhere, and the search field opens a small native Copy/Paste
+  menu instead — letting the default through there would bring the browser menu
+  back with it.
 
 ## Layout
 
@@ -233,14 +240,22 @@ src/
   lib/          typed command wrappers and formatting
 ```
 
+The CLI marks in the sidebar come from
+[Lobe Icons](https://github.com/lobehub/lobe-icons) (MIT), inlined as paths in
+`ProviderIcon.tsx` so nothing is fetched at runtime.
+
 Run the tests with `cd src-tauri && cargo test`. The scanner test runs against
 whatever is in your own `~/.claude` and skips cleanly if there is nothing there.
 
 Releases are built with `npm run app:release`, which produces the installers, the
 portable zip, and `latest.json`. That last step needs the updater signing key:
 
-```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY_PATH = "path\to\updater.key"
+```bash
+# Git Bash — the bundler only reads TAURI_SIGNING_PRIVATE_KEY (key content),
+# not _PATH, and an empty password must survive the shell (it does not in
+# PowerShell, where "" deletes the variable and the signer hangs on a prompt).
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
+export TAURI_SIGNING_PRIVATE_KEY=$(cat "path/to/updater.key")
 npm run app:release
 ```
 
@@ -259,9 +274,11 @@ $env:CLAUDE_CONFIG_DIR = "C:\tmp\demo\.claude"; .\vastdeck.exe
 
 ## Contributing
 
-Issues and pull requests are welcome. Adding a CLI provider means implementing
-the `CliProvider` trait in `src-tauri/src/providers/` — session discovery,
-launch arguments, and deletion — and the rest of the app picks it up.
+Issues and pull requests are welcome. Adding a CLI provider means teaching three
+places about it: discovery in `scanner.rs`, launch arguments in `launcher.rs`,
+and the provider list in `lib.rs`. Both of the first two currently assume Claude
+Code, so the first provider added will also be the one that factors that
+assumption out.
 
 Please keep changes to the terminal-spawning and deletion paths covered by
 tests; both touch things that are hard to undo.

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { Menu } from "@tauri-apps/api/menu";
 import {
   api,
   modeLabel,
@@ -130,6 +131,23 @@ export default function App() {
       },
     });
   }, [deleted.length, notify, refreshDeleted]);
+
+  const openSearchContextMenu = useCallback(async (e: React.MouseEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.focus();
+    try {
+      // Native edit actions preserve the input selection without browser commands.
+      const menu = await Menu.new({ items: [{ item: "Copy" }, { item: "Paste" }] });
+      try {
+        await menu.popup();
+      } finally {
+        await menu.close();
+      }
+    } catch {
+      notify({ message: "Could not open the edit menu. Use Ctrl+C or Ctrl+V instead.", tone: "danger" });
+    }
+  }, [notify]);
 
   // Message counts need a full read of every transcript, so they arrive after
   // the list is already interactive and fill in place.
@@ -370,7 +388,12 @@ export default function App() {
   const liveCount = visible.filter((s) => s.live).length;
 
   return (
-    <div className="flex h-full flex-col bg-bg">
+    <div
+      className="flex h-full flex-col bg-bg"
+      onContextMenu={(e) => {
+        e.preventDefault();
+      }}
+    >
       <TitleBar closeToTray={settings?.closeToTray ?? false} />
 
       <div className="flex min-h-0 flex-1">
@@ -413,6 +436,7 @@ export default function App() {
                 ref={searchRef}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
+                onContextMenu={openSearchContextMenu}
                 placeholder="Search sessions"
                 spellCheck={false}
                 className="w-full rounded-md border border-line bg-elevated py-[6px] pr-12 pl-8 text-[12px] text-ink outline-none placeholder:text-faint focus:border-focus"

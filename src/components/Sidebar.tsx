@@ -1,5 +1,6 @@
 import type { ProviderInfo } from "../lib/api";
 import { GearIcon, TrashIcon } from "./Icons";
+import ProviderIcon from "./ProviderIcon";
 
 export type View = "sessions" | "deleted";
 
@@ -50,13 +51,16 @@ export default function Sidebar({
                     : "cursor-default text-faint",
               ].join(" ")}
             >
-              <span className="truncate text-[13px]">{provider.name}</span>
+              <span className="flex min-w-0 items-center gap-2">
+                <ProviderIcon provider={provider.id} />
+                <span className="truncate text-[13px]">{provider.name}</span>
+              </span>
               {available ? (
-                <span className="ml-2 text-[11px] tabular-nums text-faint">
+                <span className="ml-2 shrink-0 text-[11px] tabular-nums text-faint">
                   {provider.sessionCount}
                 </span>
               ) : (
-                <span className="ml-2 rounded border border-line px-1 text-[9px] tracking-wide text-faint uppercase">
+                <span className="ml-2 shrink-0 rounded border border-line px-1 text-[9px] tracking-wide text-faint uppercase">
                   soon
                 </span>
               )}
