@@ -1,53 +1,45 @@
-Vastdeck can now update itself. Settings → System shows the version you are on and checks GitHub for a newer one; installed copies download and apply it in place.
+Vastdeck 0.2.1 makes the window behave like an app rather than a web page: each CLI now carries its own mark in the sidebar, and the browser's right-click menu is gone from everywhere it did not belong.
 
-## In-app updates
+## In this release
 
-The **Check** button in Settings reads the release manifest from this repository
-and, when there is a newer version, downloads the installer, verifies it against
-a signing key baked into the build, and runs it. Nothing installs unless that
-signature matches, so a tampered download is refused.
+- **CLI marks in the sidebar.** Claude Code, Codex and Antigravity each show
+  their own logo beside the name, so the list reads at a glance instead of by
+  reading. The marks are inlined SVG paths — nothing is fetched at runtime.
+- **No more browser context menu.** Right-clicking anywhere used to offer
+  Reload, Save as, Print and Inspect: a browser's menu, surfaced in a window
+  that is not a browser and cannot act on any of it. Right-click now does
+  nothing, except in the search field, which opens a small native Copy/Paste
+  menu.
+- **Correct window size on scaled displays.** The window is created hidden so
+  an autostart launch can stay in the tray, and a hidden window has no monitor
+  to take its scale factor from — on a display at 125% or 150% it came up sized
+  in physical pixels and the layout overflowed its own frame. The size is now
+  restated in logical units once the window exists.
 
-Two things worth knowing:
+## Also worth knowing
 
-- **Portable copies are not updated in place.** The updater works by running an
-  installer, and a portable folder has nothing to install into — so it offers
-  the release page instead of an Update button.
-- **0.1.0 cannot update itself to this release.** It shipped before the updater
-  existed and has no way to check. Install 0.2.0 by hand once and every release
-  after this one is a button.
+The README claimed a `CliProvider` trait and no network calls at all. Neither
+was true: the provider list is still hardcoded to Claude Code, and the update
+check in Settings → System reaches GitHub when you press **Check**. Both are
+now described as they actually are.
 
 ## Which download
 
 | | |
 |---|---|
-| **`Vastdeck_0.2.0_x64-setup.exe`** | Installer. No admin rights — installs for your user only, with a Start-menu entry and an uninstaller. Start here. |
-| **`Vastdeck_0.2.0_x64_portable.zip`** | One folder, nothing installed. Unzip and run; settings stay in `data\` beside the executable. |
-| `Vastdeck_0.2.0_x64_en-US.msi` | For deploying through group policy. Needs admin. |
+| **`Vastdeck_0.2.1_x64-setup.exe`** | Installer. No admin rights — installs for your user only, with a Start-menu entry and an uninstaller. Start here. |
+| **`Vastdeck_0.2.1_x64_portable.zip`** | One folder, nothing installed. Unzip and run; settings stay in `data\` beside the executable. |
+| `Vastdeck_0.2.1_x64_en-US.msi` | For deploying through group policy. Needs admin. |
 
 `latest.json` is the update manifest the app reads. You do not need to download it.
-
-## Also in this release
-
-- **Deleted view.** Soft-deleted sessions used to be reachable only through the
-  ten-second undo toast; after that the backup was an orphan, and nothing
-  recorded where the transcript came from, so it could not have been put back.
-  Backups now carry a manifest, and the sidebar has a **Deleted** view that
-  restores or purges them.
-- **Close to the system tray**, and **Start with Windows**. The Run key is
-  rewritten on every start, so moving a portable copy no longer leaves Windows
-  pointing at a file that is not there.
-- **True portable mode.** A `portable.txt` beside the executable keeps settings,
-  cache and launch scripts in `data\` next to it rather than in `%LOCALAPPDATA%`.
-- **Only one copy runs at a time.** Two instances each held their own settings in
-  memory and the last one to save won, quietly undoing the other's changes.
-- Windows Terminal tab-or-new-window is now an explicit choice rather than a
-  toggle whose label did not say what it did.
 
 ## Known limitations
 
 - Windows only, and Claude Code is the only provider wired up so far.
 - **The binaries are unsigned** for Windows itself, so SmartScreen will warn the
-  first time: *More info → Run anyway*. The update signature above is Vastdeck's
-  own integrity check and is unrelated to Authenticode.
+  first time: *More info → Run anyway*. The update signature is Vastdeck's own
+  integrity check and is unrelated to Authenticode.
+- Portable copies are not updated in place — the updater works by running an
+  installer, so it offers the release page instead.
 - Windows 11 files a new tray icon under the hidden-icons chevron until you drag
   it onto the taskbar.
