@@ -109,26 +109,70 @@ mod imp {
         (!search.hwnd.is_null()).then_some(search.hwnd)
     }
 
+    unsafe fn raise(hwnd: HWND) -> bool {
+        if IsIconic(hwnd) != 0 {
+            ShowWindow(hwnd, SW_RESTORE);
+        }
+        SetForegroundWindow(hwnd) != 0
+    }
+
     /// Raises the terminal hosting `pid`. The CLI process itself owns no window —
     /// its console host or Windows Terminal does — so walk up the process tree
     /// until a window turns up.
+    ///
+    /// Shells inside Windows Terminal are the exception: ConPTY gives them a
+    /// fake parent, so the chain walk stops at a pid that owns no window even
+    /// though a perfectly good terminal window is open on screen. When the walk
+    /// comes up empty, raise any Windows Terminal window — not necessarily the
+    /// right tab, but far better than reporting the window as gone.
     pub fn focus_window_for_pid(pid: u32) -> bool {
         let mut current = pid;
         for _ in 0..6 {
             if let Some(hwnd) = main_window_of(current) {
-                unsafe {
-                    if IsIconic(hwnd) != 0 {
-                        ShowWindow(hwnd, SW_RESTORE);
-                    }
-                    return SetForegroundWindow(hwnd) != 0;
-                }
+                return unsafe { raise(hwnd) };
             }
             match parent_pid(current) {
                 Some(parent) if parent != 0 && parent != current => current = parent,
                 _ => break,
             }
         }
-        false
+        focus_any_windows_terminal()
+    }
+
+    fn exe_name_of(entry: &PROCESSENTRY32W) -> String {
+        let len = entry
+            .szExeFile
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(entry.szExeFile.len());
+        String::from_utf16_lossy(&entry.szExeFile[..len])
+    }
+
+    fn focus_any_windows_terminal() -> bool {
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot.is_null() {
+                return false;
+            }
+            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut raised = false;
+            if Process32FirstW(snapshot, &mut entry) != 0 {
+                loop {
+                    if exe_name_of(&entry).eq_ignore_ascii_case("WindowsTerminal.exe") {
+                        if let Some(hwnd) = main_window_of(entry.th32ProcessID) {
+                            raised = raise(hwnd);
+                            break;
+                        }
+                    }
+                    if Process32NextW(snapshot, &mut entry) == 0 {
+                        break;
+                    }
+                }
+            }
+            CloseHandle(snapshot);
+            raised
+        }
     }
 }
 
