@@ -15,9 +15,10 @@ mod imp {
     use windows_sys::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_MENU};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindow, GetWindowTextLengthW, GetWindowThreadProcessId, IsIconic,
-        IsWindowVisible, SetForegroundWindow, ShowWindow, GW_OWNER, SW_RESTORE,
+        EnumWindows, GetWindow, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+        IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow, GW_OWNER, SW_RESTORE,
     };
 
     fn filetime_to_u64(ft: FILETIME) -> u64 {
@@ -78,16 +79,16 @@ mod imp {
     }
 
 
-    struct Search {
+    struct WindowList {
         pid: u32,
-        hwnd: HWND,
+        windows: Vec<HWND>,
     }
 
-    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> i32 {
-        let search = &mut *(lparam as *mut Search);
+    unsafe extern "system" fn collect_windows(hwnd: HWND, lparam: LPARAM) -> i32 {
+        let list = &mut *(lparam as *mut WindowList);
         let mut owner = 0u32;
         GetWindowThreadProcessId(hwnd, &mut owner);
-        if owner != search.pid {
+        if owner != list.pid {
             return 1;
         }
         // Only top-level, visible, titled windows are worth raising.
@@ -97,23 +98,32 @@ mod imp {
         {
             return 1;
         }
-        search.hwnd = hwnd;
-        0
+        list.windows.push(hwnd);
+        1
     }
 
-    fn main_window_of(pid: u32) -> Option<HWND> {
-        let mut search = Search { pid, hwnd: std::ptr::null_mut() };
+    /// Every raisable top-level window a process owns — Windows Terminal
+    /// deliberately makes one window handle per tab, all under a single pid.
+    fn windows_of(pid: u32) -> Vec<HWND> {
+        let mut list = WindowList { pid, windows: Vec::new() };
         unsafe {
-            EnumWindows(Some(enum_proc), &mut search as *mut Search as LPARAM);
+            EnumWindows(Some(collect_windows), &mut list as *mut WindowList as LPARAM);
         }
-        (!search.hwnd.is_null()).then_some(search.hwnd)
+        list.windows
     }
 
     unsafe fn raise(hwnd: HWND) -> bool {
         if IsIconic(hwnd) != 0 {
             ShowWindow(hwnd, SW_RESTORE);
         }
-        SetForegroundWindow(hwnd) != 0
+        // Windows refuses SetForegroundWindow from a process that is not the
+        // foreground process itself — the call silently no-ops. Tapping a
+        // modifier key first sells the click that just happened to us as the
+        // user's own input, which is the standard workaround for that lock.
+        keybd_event(VK_MENU as u8, 0, 0, 0);
+        let ok = SetForegroundWindow(hwnd) != 0;
+        keybd_event(VK_MENU as u8, 0, KEYEVENTF_KEYUP, 0);
+        ok
     }
 
     /// Raises the terminal hosting `pid`. The CLI process itself owns no window —
@@ -123,12 +133,21 @@ mod imp {
     /// Shells inside Windows Terminal are the exception: ConPTY gives them a
     /// fake parent, so the chain walk stops at a pid that owns no window even
     /// though a perfectly good terminal window is open on screen. When the walk
-    /// comes up empty, raise any Windows Terminal window — not necessarily the
-    /// right tab, but far better than reporting the window as gone.
-    pub fn focus_window_for_pid(pid: u32) -> bool {
+    /// comes up empty, fall back to a Windows Terminal window — preferring one
+    /// whose title carries the session's name (WT shows one top-level window
+    /// per tab, titled after the running shell), else any of them.
+    pub fn focus_window_for_pid(pid: u32, hint: Option<&str>) -> bool {
         let mut current = pid;
         for _ in 0..6 {
-            if let Some(hwnd) = main_window_of(current) {
+            let windows = windows_of(current);
+            if windows.len() == 1 {
+                return unsafe { raise(windows[0]) };
+            }
+            // One pid owning several raisable windows is the Windows Terminal
+            // shape: every tab is its own window under one shared pid, so the
+            // pid alone cannot tell which tab runs this session — pick by
+            // title, else keep walking.
+            if let Some(hwnd) = match_by_title(&windows, hint) {
                 return unsafe { raise(hwnd) };
             }
             match parent_pid(current) {
@@ -136,7 +155,16 @@ mod imp {
                 _ => break,
             }
         }
-        focus_any_windows_terminal()
+        focus_windows_terminal(hint)
+    }
+
+    /// First window whose title contains `hint`, case-insensitively.
+    fn match_by_title(windows: &[HWND], hint: Option<&str>) -> Option<HWND> {
+        let hint = hint.filter(|h| !h.is_empty())?;
+        let lowered = hint.to_lowercase();
+        windows.iter().copied().find(|hwnd| {
+            window_title(*hwnd).is_some_and(|title| title.to_lowercase().contains(&lowered))
+        })
     }
 
     fn exe_name_of(entry: &PROCESSENTRY32W) -> String {
@@ -148,7 +176,11 @@ mod imp {
         String::from_utf16_lossy(&entry.szExeFile[..len])
     }
 
-    fn focus_any_windows_terminal() -> bool {
+    fn focus_windows_terminal(hint: Option<&str>) -> bool {
+        // Windows Terminal hosts every tab in one process but gives each tab
+        // its own top-level window, so the pid list has to be collected before
+        // any window enumeration can pick a specific one.
+        let mut pids = Vec::new();
         unsafe {
             let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
             if snapshot.is_null() {
@@ -156,14 +188,10 @@ mod imp {
             }
             let mut entry: PROCESSENTRY32W = std::mem::zeroed();
             entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-            let mut raised = false;
             if Process32FirstW(snapshot, &mut entry) != 0 {
                 loop {
                     if exe_name_of(&entry).eq_ignore_ascii_case("WindowsTerminal.exe") {
-                        if let Some(hwnd) = main_window_of(entry.th32ProcessID) {
-                            raised = raise(hwnd);
-                            break;
-                        }
+                        pids.push(entry.th32ProcessID);
                     }
                     if Process32NextW(snapshot, &mut entry) == 0 {
                         break;
@@ -171,7 +199,36 @@ mod imp {
                 }
             }
             CloseHandle(snapshot);
-            raised
+        }
+
+        let mut windows: Vec<HWND> = Vec::new();
+        for pid in pids {
+            windows.extend(windows_of(pid));
+        }
+        if windows.is_empty() {
+            return false;
+        }
+
+        // The tab running this session is titled after it; a name match is the
+        // closest a pid-less lookup can get to the right terminal.
+        if let Some(hwnd) = match_by_title(&windows, hint) {
+            return unsafe { raise(hwnd) };
+        }
+        unsafe { raise(windows[0]) }
+    }
+
+    fn window_title(hwnd: HWND) -> Option<String> {
+        unsafe {
+            let len = GetWindowTextLengthW(hwnd);
+            if len == 0 {
+                return None;
+            }
+            let mut buf = vec![0u16; len as usize + 1];
+            let copied = GetWindowTextW(hwnd, buf.as_mut_ptr(), len as i32 + 1);
+            if copied == 0 {
+                return None;
+            }
+            Some(String::from_utf16_lossy(&buf[..copied as usize]))
         }
     }
 }
@@ -187,7 +244,7 @@ mod imp {
     pub fn parent_pid(_pid: u32) -> Option<u32> {
         None
     }
-    pub fn focus_window_for_pid(_pid: u32) -> bool {
+    pub fn focus_window_for_pid(_pid: u32, _hint: Option<&str>) -> bool {
         false
     }
 }

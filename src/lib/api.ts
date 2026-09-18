@@ -101,7 +101,9 @@ export const api = {
   listProviders: () => invoke<ProviderInfo[]>("list_providers"),
   launch: (session: Session, mode: LaunchMode) =>
     invoke<string>("launch_session", { session, mode }),
-  focus: (pid: number) => invoke<boolean>("focus_session", { pid }),
+  /** `hint` is the session name — lets the fallback find the right terminal tab by title. */
+  focus: (pid: number, hint?: string | null) =>
+    invoke<boolean>("focus_session", { pid, hint: hint ?? null }),
   deleteSession: (session: Session) =>
     invoke<DeletedHandle>("delete_session", { session }),
   deleteForever: (session: Session) =>
