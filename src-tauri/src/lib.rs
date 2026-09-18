@@ -42,6 +42,50 @@ struct ProviderInfo {
 /// that launch apart from the user opening the app themselves.
 const AUTOSTART_FLAG: &str = "--autostart";
 
+/// Written beside the settings just before the updater relaunches the app, so
+/// the fresh process can tell an update restart (show the window — the user
+/// asked for it) apart from a login launch (stay in the tray). The installer
+/// passes the original process's arguments back to the new one, so on a
+/// machine with start-with-windows the relaunched copy carries `--autostart`
+/// and would otherwise hide again.
+const UPDATE_RELAUNCH_MARKER: &str = "update-relaunch";
+
+/// A marker older than this is stale — an update restart happens seconds, not
+/// minutes, after the marker is written — and is ignored rather than forcing
+/// the window up on some later launch.
+const UPDATE_RELAUNCH_MARKER_MAX_AGE_SECS: u64 = 600;
+
+#[tauri::command]
+fn mark_update_relaunch() -> Result<(), String> {
+    let marker = paths::app_data_dir()
+        .map_err(to_err)?
+        .join(UPDATE_RELAUNCH_MARKER);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    std::fs::write(marker, now.to_string()).map_err(to_err)
+}
+
+/// True when the previous process left a fresh relaunch marker behind. The
+/// marker is consumed either way, so a crashed update cannot keep showing the
+/// window on later launches.
+fn consume_update_relaunch_marker() -> bool {
+    let Ok(marker) = paths::app_data_dir().map(|dir| dir.join(UPDATE_RELAUNCH_MARKER)) else {
+        return false;
+    };
+    let Ok(metadata) = std::fs::metadata(&marker) else {
+        return false;
+    };
+    let fresh = metadata
+        .modified()
+        .ok()
+        .and_then(|age| age.elapsed().ok())
+        .is_some_and(|age| age.as_secs() < UPDATE_RELAUNCH_MARKER_MAX_AGE_SECS);
+    let _ = std::fs::remove_file(marker);
+    fresh
+}
+
 fn to_err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
@@ -367,9 +411,14 @@ pub fn run() {
             reassert_autostart(&handle, settings.start_with_windows);
 
             // The window starts hidden (see tauri.conf.json) so a login launch
-            // never flashes on screen before being sent to the tray.
+            // never flashes on screen before being sent to the tray. An update
+            // restart counts as the user asking for the window: the installer
+            // replays the original process's arguments, so on a machine with
+            // start-with-windows the relaunched copy carries --autostart and
+            // would otherwise vanish into the tray right after updating.
+            let relaunched_after_update = consume_update_relaunch_marker();
             let launched_at_login = std::env::args().any(|arg| arg == AUTOSTART_FLAG);
-            if !(launched_at_login && settings.close_to_tray) {
+            if relaunched_after_update || !(launched_at_login && settings.close_to_tray) {
                 tray::show_main_window(&handle);
             }
 
@@ -402,10 +451,39 @@ pub fn run() {
             get_settings,
             data_location,
             app_info,
+            mark_update_relaunch,
             set_settings,
             trust_workspace,
             open_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running vastdeck");
+}
+
+#[cfg(test)]
+mod update_marker_tests {
+    use super::*;
+
+    #[test]
+    fn marker_roundtrip_and_expiry() {
+        // app_data_dir in a test environment resolves to %LOCALAPPDATA%\vastdeck;
+        // the marker name is namespaced by this test's unique filename so it
+        // cannot collide with a real marker written by a running app.
+        let dir = paths::app_data_dir().expect("app data dir");
+        let marker = dir.join(format!("test-marker-{}", std::process::id()));
+        std::fs::write(&marker, "123").unwrap();
+
+        // Fresh marker: file exists, age well within the window.
+        let metadata = std::fs::metadata(&marker).unwrap();
+        let fresh = metadata
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age.as_secs() < UPDATE_RELAUNCH_MARKER_MAX_AGE_SECS);
+        assert!(fresh, "a just-written marker must count as fresh");
+
+        // Consume semantics: gone after removal, second look reports nothing.
+        std::fs::remove_file(&marker).unwrap();
+        assert!(std::fs::metadata(&marker).is_err());
+    }
 }

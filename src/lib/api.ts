@@ -118,6 +118,8 @@ export const api = {
   /** Returns `[directory, isPortable]`. */
   dataLocation: () => invoke<[string, boolean]>("data_location"),
   appInfo: () => invoke<AppInfo>("app_info"),
+  /** Flags the next launch as an update restart so the window shows even when autostart args are replayed. */
+  markUpdateRelaunch: () => invoke<void>("mark_update_relaunch"),
   setSettings: (settings: Settings) =>
     invoke<void>("set_settings", { settings }),
   trustWorkspace: (workspace: string) =>
