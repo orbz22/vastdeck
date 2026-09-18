@@ -122,7 +122,7 @@ export default function UpdateRow() {
         );
       case "ready":
         return (
-          <Button primary onClick={() => relaunch()}>
+          <Button primary onClick={() => api.markUpdateRelaunch().finally(relaunch)}>
             Restart to finish
           </Button>
         );
