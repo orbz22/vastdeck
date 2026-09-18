@@ -152,10 +152,13 @@ fn launch_session(
     Ok(terminal)
 }
 
-/// Raises the terminal already running this session rather than starting a second one.
+/// Raises the terminal already running this session rather than starting a
+/// second one. `hint` carries the session name so a terminal that owns no pid
+/// link to the window — every Windows Terminal tab — can still be picked by
+/// title when the process chain comes up empty.
 #[tauri::command]
-fn focus_session(pid: u32) -> Result<bool, String> {
-    Ok(winproc::focus_window_for_pid(pid))
+fn focus_session(pid: u32, hint: Option<String>) -> Result<bool, String> {
+    Ok(winproc::focus_window_for_pid(pid, hint.as_deref()))
 }
 
 #[tauri::command]
