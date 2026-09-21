@@ -43,8 +43,15 @@ struct CacheEntry {
     message_count: Option<u32>,
 }
 
+/// Bump whenever parsing changes what an entry holds: entries are keyed on the
+/// transcript's (mtime, size), so a session nobody touches again would keep
+/// serving what the old parser read from it forever.
+const CACHE_VERSION: u32 = 2;
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Cache {
+    #[serde(default)]
+    version: u32,
     #[serde(default)]
     entries: HashMap<String, CacheEntry>,
 }
@@ -62,7 +69,8 @@ impl ScanCache {
         let cache = std::fs::read(&file)
             .ok()
             .and_then(|b| serde_json::from_slice::<Cache>(&b).ok())
-            .unwrap_or_default();
+            .filter(|c| c.version == CACHE_VERSION)
+            .unwrap_or(Cache { version: CACHE_VERSION, entries: HashMap::new() });
         Self { inner: Mutex::new(cache), file }
     }
 
@@ -286,6 +294,9 @@ fn parse_head(path: &Path, size: u64) -> Result<Head> {
 #[derive(Default)]
 struct Tail {
     title: Option<String>,
+    /// Set by `/rename`. Kept apart from `title` because a rename must beat an
+    /// `ai-title` no matter which of the two was written last.
+    custom_title: Option<String>,
     preview: Option<String>,
     permission_mode: Option<String>,
 }
@@ -316,6 +327,13 @@ fn parse_tail(path: &Path, size: u64) -> Result<Tail> {
                 continue;
             };
             match v.get("type").and_then(Value::as_str).unwrap_or("") {
+                "custom-title" if tail.custom_title.is_none() => {
+                    tail.custom_title = v
+                        .get("customTitle")
+                        .and_then(Value::as_str)
+                        .filter(|t| !t.trim().is_empty())
+                        .map(str::to_string);
+                }
                 "ai-title" if tail.title.is_none() => {
                     tail.title = v
                         .get("aiTitle")
@@ -336,8 +354,12 @@ fn parse_tail(path: &Path, size: u64) -> Result<Tail> {
                 }
                 _ => {}
             }
-            if tail.title.is_some() && tail.preview.is_some() && tail.permission_mode.is_some() {
-                return Ok(tail);
+            if tail.custom_title.is_some()
+                && tail.title.is_some()
+                && tail.preview.is_some()
+                && tail.permission_mode.is_some()
+            {
+                return Ok(tail.resolved());
             }
         }
 
@@ -345,13 +367,25 @@ fn parse_tail(path: &Path, size: u64) -> Result<Tail> {
         // missing field is genuinely absent — older transcripts carry no
         // `ai-title` at all. Widening the window would just re-read megabytes
         // to come back empty again.
-        let found_something =
-            tail.title.is_some() || tail.preview.is_some() || tail.permission_mode.is_some();
+        let found_something = tail.custom_title.is_some()
+            || tail.title.is_some()
+            || tail.preview.is_some()
+            || tail.permission_mode.is_some();
         if found_something || window >= size {
             break;
         }
     }
-    Ok(tail)
+    Ok(tail.resolved())
+}
+
+impl Tail {
+    /// The name the user gave the session wins over the one the CLI generated.
+    fn resolved(mut self) -> Self {
+        if let Some(custom) = self.custom_title.take() {
+            self.title = Some(custom);
+        }
+        self
+    }
 }
 
 fn read_window(path: &Path, start: u64, len: u64) -> Result<Vec<u8>> {
@@ -492,7 +526,7 @@ mod tests {
             .sum();
 
         // Cold: ignore whatever the cache already holds.
-        let cache = ScanCache { inner: Mutex::new(Cache::default()), file: std::env::temp_dir().join("vastdeck-test-cache.json") };
+        let cache = ScanCache { inner: Mutex::new(Cache { version: CACHE_VERSION, entries: HashMap::new() }), file: std::env::temp_dir().join("vastdeck-test-cache.json") };
         let start = std::time::Instant::now();
         let sessions = scan_all(&cache).expect("scan failed");
         let cold = start.elapsed();
@@ -522,6 +556,27 @@ mod tests {
         assert_eq!(sessions.len(), again.len(), "cache changed the result");
         assert!(sessions.iter().all(|s| !s.workspace.is_empty()));
         assert!(cold.as_millis() < 3000, "cold scan too slow: {cold:?}");
+    }
+
+    #[test]
+    fn rename_beats_ai_title_whichever_comes_last() {
+        let dir = std::env::temp_dir().join("vastdeck-rename-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sample.jsonl");
+        let body = [
+            r#"{"type":"user","cwd":"C:\work"}"#,
+            r#"{"type":"ai-title","aiTitle":"Generated name"}"#,
+            r#"{"type":"custom-title","customTitle":"My name"}"#,
+            r#"{"type":"ai-title","aiTitle":"Newer generated name"}"#,
+            r#"{"type":"last-prompt","lastPrompt":"hi"}"#,
+        ]
+        .join("
+");
+        std::fs::write(&path, &body).unwrap();
+
+        let tail = parse_tail(&path, body.len() as u64).unwrap();
+        assert_eq!(tail.title.as_deref(), Some("My name"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
