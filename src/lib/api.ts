@@ -20,6 +20,7 @@ export interface Session {
   path: string;
   workspace: string;
   title: string | null;
+  aiTitle: string | null;
   preview: string | null;
   gitBranch: string | null;
   cliVersion: string | null;
@@ -101,9 +102,12 @@ export const api = {
   listProviders: () => invoke<ProviderInfo[]>("list_providers"),
   launch: (session: Session, mode: LaunchMode) =>
     invoke<string>("launch_session", { session, mode }),
-  /** `hint` is the session name — lets the fallback find the right terminal tab by title. */
-  focus: (pid: number, hint?: string | null) =>
-    invoke<boolean>("focus_session", { pid, hint: hint ?? null }),
+  /** `hints` are names the session's terminal tab may be titled after, likeliest first. */
+  focus: (pid: number, hints: (string | null | undefined)[]) =>
+    invoke<boolean>("focus_session", {
+      pid,
+      hints: hints.filter((h): h is string => !!h && h.trim() !== ""),
+    }),
   deleteSession: (session: Session) =>
     invoke<DeletedHandle>("delete_session", { session }),
   deleteForever: (session: Session) =>

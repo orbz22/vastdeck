@@ -34,6 +34,8 @@ struct CacheEntry {
     size: u64,
     workspace: String,
     title: Option<String>,
+    #[serde(default)]
+    ai_title: Option<String>,
     preview: Option<String>,
     git_branch: Option<String>,
     cli_version: Option<String>,
@@ -46,7 +48,7 @@ struct CacheEntry {
 /// Bump whenever parsing changes what an entry holds: entries are keyed on the
 /// transcript's (mtime, size), so a session nobody touches again would keep
 /// serving what the old parser read from it forever.
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Cache {
@@ -173,6 +175,7 @@ fn scan_one(path: &Path, cache: &ScanCache) -> Result<Option<Session>> {
                 size,
                 workspace: head.workspace.unwrap_or_default(),
                 title: tail.title,
+                ai_title: tail.ai_title,
                 preview: tail.preview,
                 git_branch: head.git_branch,
                 cli_version: head.cli_version,
@@ -195,6 +198,7 @@ fn scan_one(path: &Path, cache: &ScanCache) -> Result<Option<Session>> {
         path: path.to_string_lossy().into_owned(),
         workspace: entry.workspace,
         title: entry.title,
+        ai_title: entry.ai_title,
         preview: entry.preview,
         git_branch: entry.git_branch,
         cli_version: entry.cli_version,
@@ -297,6 +301,9 @@ struct Tail {
     /// Set by `/rename`. Kept apart from `title` because a rename must beat an
     /// `ai-title` no matter which of the two was written last.
     custom_title: Option<String>,
+    /// The `ai-title` as found, left in place after `resolved` lets a rename
+    /// take over `title`.
+    ai_title: Option<String>,
     preview: Option<String>,
     permission_mode: Option<String>,
 }
@@ -381,6 +388,7 @@ fn parse_tail(path: &Path, size: u64) -> Result<Tail> {
 impl Tail {
     /// The name the user gave the session wins over the one the CLI generated.
     fn resolved(mut self) -> Self {
+        self.ai_title = self.title.clone();
         if let Some(custom) = self.custom_title.take() {
             self.title = Some(custom);
         }
@@ -576,6 +584,7 @@ mod tests {
 
         let tail = parse_tail(&path, body.len() as u64).unwrap();
         assert_eq!(tail.title.as_deref(), Some("My name"));
+        assert_eq!(tail.ai_title.as_deref(), Some("Newer generated name"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

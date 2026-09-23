@@ -314,6 +314,7 @@ mod tests {
             // parentheses. This is what the quoting has to survive.
             workspace: r"C:\Work Projects (2026)\.config\my-app".into(),
             title: Some("Vastdeck; rm -rf /".into()),
+            ai_title: None,
             preview: None,
             git_branch: None,
             cli_version: None,
