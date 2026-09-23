@@ -10,6 +10,7 @@
 //! the `claude` call itself, and the terminal is handed only that clean path.
 
 use crate::model::{LaunchMode, Session};
+use crate::opencode;
 use crate::paths;
 use crate::settings::{Settings, TerminalChoice};
 use anyhow::{anyhow, Result};
@@ -99,18 +100,47 @@ fn sanitize_title(raw: &str) -> String {
     }
 }
 
-fn args_for(session: &Session, mode: LaunchMode) -> Vec<String> {
+fn args_for(session: &Session, mode: LaunchMode) -> Result<Vec<String>> {
+    if session.provider == opencode::PROVIDER_ID {
+        let mut args = vec!["--session".to_string(), session.id.clone()];
+        args.extend(opencode_flags(mode)?.iter().map(|s| s.to_string()));
+        return Ok(args);
+    }
     let mut args = vec!["--resume".to_string(), session.id.clone()];
     args.extend(mode.flags().iter().map(|s| s.to_string()));
-    args
+    Ok(args)
 }
 
-fn write_cmd_script(session: &Session, claude: &Path, mode: LaunchMode) -> Result<PathBuf> {
+/// OpenCode's spelling of each mode. It has no accept-edits-only mode — its
+/// permissions are set per tool in config — so that one is refused rather
+/// than quietly resumed with prompts the user asked to skip.
+fn opencode_flags(mode: LaunchMode) -> Result<&'static [&'static str]> {
+    Ok(match mode {
+        LaunchMode::Normal => &[],
+        LaunchMode::SkipPermissions => &["--auto"],
+        LaunchMode::Plan => &["--agent", "plan"],
+        LaunchMode::Fork => &["--fork"],
+        LaunchMode::AcceptEdits => {
+            return Err(anyhow!("OpenCode has no accept-edits mode"));
+        }
+    })
+}
+
+/// The CLI that resumes `session`.
+fn program_for(session: &Session, settings: &Settings) -> Result<PathBuf> {
+    if session.provider == opencode::PROVIDER_ID {
+        opencode::resolve()
+    } else {
+        resolve_claude(settings)
+    }
+}
+
+fn write_cmd_script(session: &Session, program: &Path, mode: LaunchMode) -> Result<PathBuf> {
     let dir = scripts_dir()?;
     sweep_old_scripts(&dir);
     let file = dir.join(script_name(session, "cmd"));
 
-    let args = args_for(session, mode)
+    let args = args_for(session, mode)?
         .iter()
         .map(|a| format!("\"{a}\""))
         .collect::<Vec<_>>()
@@ -120,23 +150,23 @@ fn write_cmd_script(session: &Session, claude: &Path, mode: LaunchMode) -> Resul
         "@echo off\r\n\
          title {title}\r\n\
          cd /d \"{cwd}\"\r\n\
-         \"{claude}\" {args}\r\n",
+         \"{program}\" {args}\r\n",
         title = sanitize_title(display_name(session)),
         cwd = session.workspace,
-        claude = claude.display(),
+        program = program.display(),
         args = args,
     );
     std::fs::write(&file, body)?;
     Ok(file)
 }
 
-fn write_ps_script(session: &Session, claude: &Path, mode: LaunchMode) -> Result<PathBuf> {
+fn write_ps_script(session: &Session, program: &Path, mode: LaunchMode) -> Result<PathBuf> {
     let dir = scripts_dir()?;
     sweep_old_scripts(&dir);
     let file = dir.join(script_name(session, "ps1"));
 
     let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
-    let args = args_for(session, mode)
+    let args = args_for(session, mode)?
         .iter()
         .map(|a| quote(a))
         .collect::<Vec<_>>()
@@ -145,10 +175,10 @@ fn write_ps_script(session: &Session, claude: &Path, mode: LaunchMode) -> Result
     let body = format!(
         "$Host.UI.RawUI.WindowTitle = {title}\r\n\
          Set-Location -LiteralPath {cwd}\r\n\
-         & {claude} {args}\r\n",
+         & {program} {args}\r\n",
         title = quote(&sanitize_title(display_name(session))),
         cwd = quote(&session.workspace),
-        claude = quote(&claude.display().to_string()),
+        program = quote(&program.display().to_string()),
         args = args,
     );
     std::fs::write(&file, body)?;
@@ -161,7 +191,11 @@ fn display_name(session: &Session) -> &str {
         .as_ref()
         .and_then(|l| l.name.as_deref())
         .or(session.title.as_deref())
-        .unwrap_or("Claude Code")
+        .unwrap_or(if session.provider == opencode::PROVIDER_ID {
+            "OpenCode"
+        } else {
+            "Claude Code"
+        })
 }
 
 /// Unique name for a launch script. The millisecond clock alone is not enough —
@@ -204,7 +238,9 @@ pub fn launch(session: &Session, mode: LaunchMode, settings: &Settings) -> Resul
             session.workspace
         ));
     }
-    let claude = resolve_claude(settings)?;
+    // Refused modes fail here, before any terminal opens.
+    args_for(session, mode)?;
+    let program = program_for(session, settings)?;
 
     let order: Vec<TerminalChoice> = match settings.terminal {
         TerminalChoice::Auto => vec![
@@ -218,7 +254,7 @@ pub fn launch(session: &Session, mode: LaunchMode, settings: &Settings) -> Resul
 
     let mut last_error = None;
     for choice in order {
-        match try_launch(choice, session, &claude, mode, settings) {
+        match try_launch(choice, session, &program, mode, settings) {
             Ok(()) => return Ok(format!("{choice:?}")),
             Err(err) => last_error = Some(err),
         }
@@ -229,14 +265,14 @@ pub fn launch(session: &Session, mode: LaunchMode, settings: &Settings) -> Resul
 fn try_launch(
     choice: TerminalChoice,
     session: &Session,
-    claude: &Path,
+    program: &Path,
     mode: LaunchMode,
     settings: &Settings,
 ) -> Result<()> {
     match choice {
         TerminalChoice::WindowsTerminal => {
             let wt = which("wt.exe").ok_or_else(|| anyhow!("wt.exe not found"))?;
-            let script = write_cmd_script(session, claude, mode)?;
+            let script = write_cmd_script(session, program, mode)?;
             let cmd_exe = which("cmd.exe").unwrap_or_else(|| PathBuf::from("cmd.exe"));
 
             let mut command = Command::new(wt);
@@ -245,7 +281,7 @@ fn try_launch(
         }
         TerminalChoice::Pwsh => {
             let exe = which("pwsh.exe").ok_or_else(|| anyhow!("pwsh.exe not found"))?;
-            let script = write_ps_script(session, claude, mode)?;
+            let script = write_ps_script(session, program, mode)?;
             let mut command = Command::new(exe);
             command.args(["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-File"]);
             command.arg(script);
@@ -254,7 +290,7 @@ fn try_launch(
         TerminalChoice::PowerShell => {
             let exe = which("powershell.exe")
                 .ok_or_else(|| anyhow!("powershell.exe not found"))?;
-            let script = write_ps_script(session, claude, mode)?;
+            let script = write_ps_script(session, program, mode)?;
             let mut command = Command::new(exe);
             command.args(["-NoLogo", "-NoExit", "-ExecutionPolicy", "Bypass", "-File"]);
             command.arg(script);
@@ -262,7 +298,7 @@ fn try_launch(
         }
         TerminalChoice::Cmd => {
             let exe = which("cmd.exe").unwrap_or_else(|| PathBuf::from("cmd.exe"));
-            let script = write_cmd_script(session, claude, mode)?;
+            let script = write_cmd_script(session, program, mode)?;
             let mut command = Command::new(exe);
             command.arg("/k");
             command.arg(script);
@@ -392,6 +428,24 @@ mod tests {
         );
         assert_eq!(LaunchMode::Plan.flags(), ["--permission-mode", "plan"]);
         assert_eq!(LaunchMode::Fork.flags(), ["--fork-session"]);
+    }
+
+    #[test]
+    fn opencode_sessions_resume_with_their_own_flags() {
+        let mut session = fixture();
+        session.provider = opencode::PROVIDER_ID.into();
+        session.id = "ses_31f1e986fffeDCFve3fFr3YuyY".into();
+
+        assert_eq!(
+            args_for(&session, LaunchMode::SkipPermissions).unwrap(),
+            ["--session", "ses_31f1e986fffeDCFve3fFr3YuyY", "--auto"]
+        );
+        assert_eq!(
+            args_for(&session, LaunchMode::Plan).unwrap()[2..],
+            ["--agent", "plan"]
+        );
+        assert_eq!(args_for(&session, LaunchMode::Fork).unwrap()[2..], ["--fork"]);
+        assert!(args_for(&session, LaunchMode::AcceptEdits).is_err());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { LAUNCH_MODES, type LaunchMode } from "../lib/api";
+import type { LaunchMode, LaunchModeInfo } from "../lib/api";
 import { ChevronDown, WarnIcon } from "./Icons";
 
 /**
@@ -12,11 +12,13 @@ export default function LaunchButton({
   primaryAction,
   onPick,
   live,
+  modes,
 }: {
   primaryLabel: string;
   primaryAction: () => void;
   onPick: (mode: LaunchMode) => void;
   live: boolean;
+  modes: LaunchModeInfo[];
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -72,7 +74,7 @@ export default function LaunchButton({
               process on the same transcript.
             </p>
           )}
-          {LAUNCH_MODES.map((mode) => (
+          {modes.map((mode) => (
             <button
               key={mode.id}
               type="button"

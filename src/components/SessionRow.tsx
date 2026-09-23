@@ -1,4 +1,4 @@
-import type { LaunchMode, Session, WorkspaceStats } from "../lib/api";
+import { launchModesFor, type LaunchMode, type Session, type WorkspaceStats } from "../lib/api";
 import { basename, bytes, cost, fullTime, relativeTime, shortPath } from "../lib/format";
 import LaunchButton from "./LaunchButton";
 import { FolderIcon, TrashIcon } from "./Icons";
@@ -125,8 +125,14 @@ export default function SessionRow({
               </span>
             </>
           )}
-          <Dot />
-          <span className="shrink-0 tabular-nums">{bytes(session.sizeBytes)}</span>
+          {/* OpenCode keeps sessions in a database, not a file per session,
+              so there is no size to show for them. */}
+          {session.sizeBytes > 0 && (
+            <>
+              <Dot />
+              <span className="shrink-0 tabular-nums">{bytes(session.sizeBytes)}</span>
+            </>
+          )}
           {/* Cost is recorded per workspace, not per session, so it belongs on
               the group header — repeating it on every row would read as the
               price of that one conversation. */}
@@ -156,6 +162,7 @@ export default function SessionRow({
           primaryAction={() => (live ? onFocus() : onLaunch(defaultMode))}
           onPick={onLaunch}
           live={!!live}
+          modes={launchModesFor(session.provider)}
         />
       </div>
     </div>

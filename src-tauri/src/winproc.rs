@@ -228,6 +228,28 @@ mod imp {
         unsafe { raise(windows[0]) }
     }
 
+    unsafe extern "system" fn collect_titled(hwnd: HWND, lparam: LPARAM) -> i32 {
+        let list = &mut *(lparam as *mut Vec<(u32, String)>);
+        if IsWindowVisible(hwnd) == 0 || !GetWindow(hwnd, GW_OWNER).is_null() {
+            return 1;
+        }
+        if let Some(title) = window_title(hwnd) {
+            let mut owner = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut owner);
+            list.push((owner, title));
+        }
+        1
+    }
+
+    /// Every visible top-level window with a title, with the pid owning it.
+    pub fn titled_windows() -> Vec<(u32, String)> {
+        let mut list: Vec<(u32, String)> = Vec::new();
+        unsafe {
+            EnumWindows(Some(collect_titled), &mut list as *mut _ as LPARAM);
+        }
+        list
+    }
+
     fn window_title(hwnd: HWND) -> Option<String> {
         unsafe {
             let len = GetWindowTextLengthW(hwnd);
@@ -278,9 +300,12 @@ mod imp {
     pub fn focus_window_for_pid(_pid: u32, _hints: &[&str]) -> bool {
         false
     }
+    pub fn titled_windows() -> Vec<(u32, String)> {
+        Vec::new()
+    }
 }
 
-pub use imp::{focus_window_for_pid, is_alive};
+pub use imp::{focus_window_for_pid, is_alive, titled_windows};
 
 #[cfg(test)]
 mod tests {
