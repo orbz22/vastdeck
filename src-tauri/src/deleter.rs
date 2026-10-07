@@ -283,6 +283,7 @@ mod tests {
             path: path.to_string_lossy().into_owned(),
             workspace: r"C:\tmp".into(),
             title: None,
+            ai_title: None,
             preview: None,
             git_branch: None,
             cli_version: None,

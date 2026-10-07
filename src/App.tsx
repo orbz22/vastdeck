@@ -315,11 +315,11 @@ export default function App() {
   const focusSession = useCallback(
     async (session: Session) => {
       if (!session.live) return;
-      // Claude Code titles its terminal tab after the conversation, so the
-      // transcript title is what a tab is findable by; the registry name is a
-      // weaker fallback.
-      const hint = session.title ?? session.live.name;
-      const raised = await api.focus(session.live.pid, hint).catch(() => false);
+      // Claude Code titles its terminal tab after the conversation. After a
+      // `/rename` the tab may carry either the new name or the generated one,
+      // so try both; the registry name is a weaker fallback.
+      const hints = [session.title, session.aiTitle, session.live.name];
+      const raised = await api.focus(session.live.pid, hints).catch(() => false);
       if (!raised) {
         notify({
           message: "Could not find that terminal window — it may be on another desktop.",

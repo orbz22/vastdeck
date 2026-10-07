@@ -10,8 +10,14 @@ pub struct Session {
     pub path: String,
     /// Real working directory, taken from the transcript (the folder name is lossy).
     pub workspace: String,
-    /// Last `ai-title` recorded for the session.
+    /// The session's name: its `/rename` name if it has one, else the last
+    /// `ai-title`.
     pub title: Option<String>,
+    /// The last `ai-title`, kept even when a rename overrides `title` — the
+    /// terminal tab may still be titled after it, and Focus matches tabs by
+    /// title.
+    #[serde(default)]
+    pub ai_title: Option<String>,
     /// Last user prompt, used as the one-line preview.
     pub preview: Option<String>,
     pub git_branch: Option<String>,

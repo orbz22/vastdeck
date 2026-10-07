@@ -136,7 +136,7 @@ mod imp {
     /// comes up empty, fall back to a Windows Terminal window — preferring one
     /// whose title carries the session's name (WT shows one top-level window
     /// per tab, titled after the running shell), else any of them.
-    pub fn focus_window_for_pid(pid: u32, hint: Option<&str>) -> bool {
+    pub fn focus_window_for_pid(pid: u32, hints: &[&str]) -> bool {
         let mut current = pid;
         for _ in 0..6 {
             let windows = windows_of(current);
@@ -147,7 +147,7 @@ mod imp {
             // shape: every tab is its own window under one shared pid, so the
             // pid alone cannot tell which tab runs this session — pick by
             // title, else keep walking.
-            if let Some(hwnd) = match_by_title(&windows, hint) {
+            if let Some(hwnd) = match_by_title(&windows, hints) {
                 return unsafe { raise(hwnd) };
             }
             match parent_pid(current) {
@@ -155,16 +155,27 @@ mod imp {
                 _ => break,
             }
         }
-        focus_windows_terminal(hint)
+        focus_windows_terminal(hints)
     }
 
-    /// First window whose title contains `hint`, case-insensitively.
-    fn match_by_title(windows: &[HWND], hint: Option<&str>) -> Option<HWND> {
-        let hint = hint.filter(|h| !h.is_empty())?;
-        let lowered = hint.to_lowercase();
-        windows.iter().copied().find(|hwnd| {
-            window_title(*hwnd).is_some_and(|title| title.to_lowercase().contains(&lowered))
-        })
+    /// First window whose title contains a hint, case-insensitively. Hints
+    /// are tried in order, so the likeliest name wins over a weaker one that
+    /// happens to match some other tab too.
+    fn match_by_title(windows: &[HWND], hints: &[&str]) -> Option<HWND> {
+        let titles: Vec<(HWND, String)> = windows
+            .iter()
+            .filter_map(|hwnd| window_title(*hwnd).map(|t| (*hwnd, t.to_lowercase())))
+            .collect();
+        hints
+            .iter()
+            .map(|h| h.trim().to_lowercase())
+            .filter(|h| !h.is_empty())
+            .find_map(|hint| {
+                titles
+                    .iter()
+                    .find(|(_, title)| super::title_names(title, &hint))
+                    .map(|(hwnd, _)| *hwnd)
+            })
     }
 
     fn exe_name_of(entry: &PROCESSENTRY32W) -> String {
@@ -176,7 +187,7 @@ mod imp {
         String::from_utf16_lossy(&entry.szExeFile[..len])
     }
 
-    fn focus_windows_terminal(hint: Option<&str>) -> bool {
+    fn focus_windows_terminal(hints: &[&str]) -> bool {
         // Windows Terminal hosts every tab in one process but gives each tab
         // its own top-level window, so the pid list has to be collected before
         // any window enumeration can pick a specific one.
@@ -211,7 +222,7 @@ mod imp {
 
         // The tab running this session is titled after it; a name match is the
         // closest a pid-less lookup can get to the right terminal.
-        if let Some(hwnd) = match_by_title(&windows, hint) {
+        if let Some(hwnd) = match_by_title(&windows, hints) {
             return unsafe { raise(hwnd) };
         }
         unsafe { raise(windows[0]) }
@@ -233,6 +244,26 @@ mod imp {
     }
 }
 
+/// Whether a (lowercased) window title names the (lowercased) session. Claude
+/// Code prefixes the tab title with a status glyph and cuts long names off
+/// with `…`, so a cut-off title matches when what survived of the name is the
+/// start of the hint — "✳ local offline model setup for beyonda…" names
+/// "local offline model setup for beyondai".
+fn title_names(title: &str, hint: &str) -> bool {
+    if title.contains(hint) {
+        return true;
+    }
+    let Some(cut) = title.trim_end().strip_suffix('…') else {
+        return false;
+    };
+    // Too short a fragment would match half the tabs open.
+    const MIN_FRAGMENT: usize = 8;
+    cut.char_indices()
+        .map(|(i, _)| cut[i..].trim_start())
+        .take_while(|rest| rest.chars().count() >= MIN_FRAGMENT)
+        .any(|rest| hint.starts_with(rest))
+}
+
 #[cfg(not(windows))]
 mod imp {
     pub fn process_start_time(_pid: u32) -> Option<u64> {
@@ -244,9 +275,33 @@ mod imp {
     pub fn parent_pid(_pid: u32) -> Option<u32> {
         None
     }
-    pub fn focus_window_for_pid(_pid: u32, _hint: Option<&str>) -> bool {
+    pub fn focus_window_for_pid(_pid: u32, _hints: &[&str]) -> bool {
         false
     }
 }
 
 pub use imp::{focus_window_for_pid, is_alive};
+
+#[cfg(test)]
+mod tests {
+    use super::title_names;
+
+    #[test]
+    fn whole_names_match_anywhere_in_the_title() {
+        assert!(title_names("✳ odc creative", "odc creative"));
+        assert!(!title_names("✳ odc creative", "claude code"));
+    }
+
+    #[test]
+    fn cut_off_titles_match_the_start_of_the_name() {
+        let title = "oc | local offline model setup for beyonda…";
+        assert!(title_names(title, "local offline model setup for beyondai"));
+        assert!(!title_names(title, "local offline model setup for other"));
+        assert!(!title_names("✳ odc creative", "odc creative and more"));
+    }
+
+    #[test]
+    fn a_tiny_fragment_is_not_enough() {
+        assert!(!title_names("✳ ab…", "abcdefghijk"));
+    }
+}

@@ -157,8 +157,9 @@ fn launch_session(
 /// link to the window — every Windows Terminal tab — can still be picked by
 /// title when the process chain comes up empty.
 #[tauri::command]
-fn focus_session(pid: u32, hint: Option<String>) -> Result<bool, String> {
-    Ok(winproc::focus_window_for_pid(pid, hint.as_deref()))
+fn focus_session(pid: u32, hints: Vec<String>) -> Result<bool, String> {
+    let hints: Vec<&str> = hints.iter().map(String::as_str).collect();
+    Ok(winproc::focus_window_for_pid(pid, &hints))
 }
 
 #[tauri::command]
