@@ -151,6 +151,28 @@ export const LAUNCH_MODES: {
   { id: "fork", label: "Fork", hint: "Branch off, keep the original" },
 ];
 
+export type LaunchModeInfo = (typeof LAUNCH_MODES)[number];
+
+/**
+ * OpenCode spells the same modes with its own flags and has no accept-edits
+ * mode at all (its permissions are per tool, in config).
+ */
+const OPENCODE_MODES: LaunchModeInfo[] = [
+  { id: "normal", label: "Resume", hint: "Permission prompts stay on" },
+  { id: "skipPermissions", label: "Skip permissions", hint: "--auto", danger: true },
+  { id: "plan", label: "Plan", hint: "--agent plan" },
+  { id: "fork", label: "Fork", hint: "--fork" },
+];
+
+export function launchModesFor(provider: string): LaunchModeInfo[] {
+  return provider === "opencode" ? OPENCODE_MODES : LAUNCH_MODES;
+}
+
+/** `mode`, or plain resume when this provider cannot run it. */
+export function supportedMode(provider: string, mode: LaunchMode): LaunchMode {
+  return launchModesFor(provider).some((m) => m.id === mode) ? mode : "normal";
+}
+
 export function modeLabel(mode: LaunchMode): string {
   return LAUNCH_MODES.find((m) => m.id === mode)?.label ?? "Resume";
 }

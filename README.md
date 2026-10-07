@@ -9,7 +9,7 @@
 Reopen one in a terminal, see which are running, delete the ones you are done
 with — and get them back if you change your mind.
 
-Claude Code today · Codex and Antigravity next
+Claude Code and OpenCode today · Codex and Antigravity next
 
 Windows · [Tauri 2](https://tauri.app) · MIT
 
@@ -31,9 +31,10 @@ Vastdeck reads those folders and shows you the whole thing: what the session was
 about, where it lives, when you last touched it, whether it is running right
 now. One click reopens it in a terminal.
 
-Claude Code is the CLI it reads today. Session discovery, launch arguments and
-deletion all live in their own Rust modules, so Codex CLI and Antigravity CLI
-are a matter of generalising those seams rather than rewriting the app.
+Claude Code and OpenCode are the CLIs it reads today. Session discovery, launch
+arguments and deletion all live in their own Rust modules, so Codex CLI and
+Antigravity CLI are a matter of adding to those seams rather than rewriting the
+app.
 
 ## What it does
 
@@ -106,8 +107,9 @@ with Windows 11.
 
 ## Privacy
 
-Vastdeck reads and writes files in your own Claude Code directory and nothing
-else. There is no telemetry and no account. The only outbound request it ever
+Vastdeck reads and writes files in your own Claude Code directory, and reads
+OpenCode's database — changes to OpenCode sessions go through the `opencode`
+CLI itself. Nothing else is touched. There is no telemetry and no account. The only outbound request it ever
 makes is the update check in Settings → System, and only when you press
 **Check**. Your conversations never leave the machine.
 
@@ -121,6 +123,12 @@ the database.
 | `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` | one file per session |
 | `~/.claude/sessions/<pid>.json` | which sessions are running right now |
 | `~/.claude.json` → `projects[cwd]` | per-workspace cost and line counts |
+| `~/.local/share/opencode/opencode.db` | OpenCode sessions, opened read-only |
+| `OC \| <title>` window titles | which OpenCode sessions are running |
+
+OpenCode deletes run `opencode export` into the same backup folder before
+`opencode session delete`, and a restore is `opencode import` run from the
+session's workspace. Vastdeck never writes to OpenCode's database itself.
 
 Two details shape the design.
 
@@ -274,11 +282,10 @@ $env:CLAUDE_CONFIG_DIR = "C:\tmp\demo\.claude"; .\vastdeck.exe
 
 ## Contributing
 
-Issues and pull requests are welcome. Adding a CLI provider means teaching three
-places about it: discovery in `scanner.rs`, launch arguments in `launcher.rs`,
-and the provider list in `lib.rs`. Both of the first two currently assume Claude
-Code, so the first provider added will also be the one that factors that
-assumption out.
+Issues and pull requests are welcome. Adding a CLI provider means teaching a few
+places about it: discovery (`scanner.rs` for Claude Code, `opencode.rs` for
+OpenCode), launch arguments in `launcher.rs`, deletion in `deleter.rs`, and the
+provider list in `lib.rs`. `opencode.rs` is the pattern to follow.
 
 Please keep changes to the terminal-spawning and deletion paths covered by
 tests; both touch things that are hard to undo.

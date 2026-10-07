@@ -8,8 +8,13 @@
 //! transcript came from. Without it a backup is a dead end: the folder it
 //! belongs to is `~/.claude/projects/<encoded-cwd>/`, and that encoding is
 //! lossy, so the path cannot be reconstructed from the transcript alone.
+//!
+//! OpenCode sessions live in a database rather than a file, so there is
+//! nothing to move: a soft delete saves `opencode export` output to the same
+//! backup folder before `opencode session delete`, and a restore imports it.
 
 use crate::model::{DeletedHandle, DeletedSession, Session};
+use crate::opencode;
 use crate::paths;
 use crate::scanner;
 use anyhow::{anyhow, Result};
@@ -17,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 const MANIFEST: &str = "vastdeck.json";
+/// The `opencode export` output inside an OpenCode session's backup.
+const OPENCODE_EXPORT: &str = "opencode-session.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,18 +35,71 @@ struct Manifest {
     #[serde(default)]
     workspace: String,
     deleted_at: i64,
+    /// Absent in backups made before other CLIs were supported, which are all
+    /// Claude Code ones.
+    #[serde(default)]
+    provider: Option<String>,
+}
+
+impl Manifest {
+    fn is_opencode(&self) -> bool {
+        self.provider.as_deref() == Some(opencode::PROVIDER_ID)
+    }
+}
+
+fn new_backup_dir(session: &Session) -> Result<PathBuf> {
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let short = session
+        .id
+        .strip_prefix("ses_")
+        .unwrap_or(&session.id)
+        .chars()
+        .take(8)
+        .collect::<String>();
+    let backup = paths::backups_dir()?.join(format!("{stamp}-{short}"));
+    std::fs::create_dir_all(&backup)?;
+    Ok(backup)
+}
+
+fn soft_delete_opencode(session: &Session) -> Result<DeletedHandle> {
+    // Export first and delete only once the backup is on disk: a failed
+    // export must leave the session exactly where it was.
+    let export = opencode::export(&session.id)?;
+    let backup = new_backup_dir(session)?;
+    std::fs::write(backup.join(OPENCODE_EXPORT), export)?;
+    let manifest = Manifest {
+        session_id: session.id.clone(),
+        original_path: session.path.clone(),
+        original_env_dir: None,
+        workspace: session.workspace.clone(),
+        deleted_at: chrono::Utc::now().timestamp_millis(),
+        provider: Some(opencode::PROVIDER_ID.to_string()),
+    };
+    std::fs::write(backup.join(MANIFEST), serde_json::to_vec_pretty(&manifest)?)?;
+
+    if let Err(err) = opencode::delete(&session.id) {
+        // Nothing was deleted, so a backup would only list it twice.
+        let _ = std::fs::remove_dir_all(&backup);
+        return Err(err);
+    }
+    Ok(DeletedHandle {
+        session_id: session.id.clone(),
+        backup_dir: Some(backup.to_string_lossy().into_owned()),
+        original_path: session.path.clone(),
+        original_env_dir: None,
+    })
 }
 
 pub fn soft_delete(session: &Session) -> Result<DeletedHandle> {
+    if session.provider == opencode::PROVIDER_ID {
+        return soft_delete_opencode(session);
+    }
     let transcript = PathBuf::from(&session.path);
     if !transcript.is_file() {
         return Err(anyhow!("transcript is already gone: {}", session.path));
     }
 
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let short = &session.id[..8.min(session.id.len())];
-    let backup = paths::backups_dir()?.join(format!("{stamp}-{short}"));
-    std::fs::create_dir_all(&backup)?;
+    let backup = new_backup_dir(session)?;
 
     // The env folder is worthless without the transcript, so it travels with it.
     let env_dir = paths::session_env_dir(&session.id)?;
@@ -58,6 +118,7 @@ pub fn soft_delete(session: &Session) -> Result<DeletedHandle> {
         original_env_dir: moved_env.clone(),
         workspace: session.workspace.clone(),
         deleted_at: chrono::Utc::now().timestamp_millis(),
+        provider: None,
     };
     std::fs::write(backup.join(MANIFEST), serde_json::to_vec_pretty(&manifest)?)?;
 
@@ -77,6 +138,15 @@ pub fn soft_delete(session: &Session) -> Result<DeletedHandle> {
 }
 
 pub fn hard_delete(session: &Session) -> Result<DeletedHandle> {
+    if session.provider == opencode::PROVIDER_ID {
+        opencode::delete(&session.id)?;
+        return Ok(DeletedHandle {
+            session_id: session.id.clone(),
+            backup_dir: None,
+            original_path: session.path.clone(),
+            original_env_dir: None,
+        });
+    }
     let transcript = PathBuf::from(&session.path);
     if transcript.is_file() {
         std::fs::remove_file(&transcript)?;
@@ -117,12 +187,20 @@ pub fn list_deleted() -> Result<Vec<DeletedSession>> {
         if !dir.is_dir() {
             continue;
         }
+        let manifest = read_manifest(&dir);
         let Some(transcript) = transcript_in(&dir) else {
             continue;
         };
         let size = std::fs::metadata(&transcript).map(|m| m.len()).unwrap_or(0);
-        let manifest = read_manifest(&dir);
-        let meta = scanner::quick_meta(&transcript).ok();
+        let meta = if manifest.as_ref().is_some_and(Manifest::is_opencode) {
+            opencode::export_meta(&transcript).map(|(title, workspace)| scanner::QuickMeta {
+                workspace,
+                title,
+                preview: None,
+            })
+        } else {
+            scanner::quick_meta(&transcript).ok()
+        };
 
         let deleted_at = manifest
             .as_ref()
@@ -171,6 +249,16 @@ pub fn restore(backup_dir: &str) -> Result<()> {
     let manifest = read_manifest(&backup).ok_or_else(|| {
         anyhow!("this backup has no manifest, so its original location is unknown")
     })?;
+
+    if manifest.is_opencode() {
+        let export = backup.join(OPENCODE_EXPORT);
+        if !export.is_file() {
+            return Err(anyhow!("backup no longer holds the OpenCode export"));
+        }
+        opencode::import(&manifest.session_id, &export, &manifest.workspace)?;
+        let _ = std::fs::remove_dir_all(&backup);
+        return Ok(());
+    }
 
     let original = PathBuf::from(&manifest.original_path);
     if original.exists() {
@@ -228,7 +316,12 @@ fn read_manifest(dir: &Path) -> Option<Manifest> {
     serde_json::from_slice(&bytes).ok()
 }
 
+/// The conversation a backup holds: a Claude transcript, or an OpenCode export.
 fn transcript_in(dir: &Path) -> Option<PathBuf> {
+    let export = dir.join(OPENCODE_EXPORT);
+    if export.is_file() {
+        return Some(export);
+    }
     std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
         let p = e.path();
         (p.extension().and_then(|x| x.to_str()) == Some("jsonl")).then_some(p)
@@ -389,5 +482,48 @@ mod tests {
         assert!(undo(&handle).is_err(), "a permanent delete cannot be undone");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Runs the real `opencode` CLI against a throwaway data folder, never the
+    /// user's own database. Needs an `opencode export` file to seed it:
+    /// `VASTDECK_OPENCODE_FIXTURE=<export.json> cargo test -- --ignored opencode_round_trip`
+    #[test]
+    #[ignore = "runs the opencode CLI; needs VASTDECK_OPENCODE_FIXTURE"]
+    fn opencode_round_trip() {
+        let fixture = PathBuf::from(std::env::var("VASTDECK_OPENCODE_FIXTURE").unwrap());
+        let root = std::env::temp_dir().join("vastdeck-opencode-round-trip");
+        let _ = std::fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::env::set_var("XDG_DATA_HOME", root.join("data"));
+        std::env::set_var("CLAUDE_CONFIG_DIR", root.join("claude"));
+
+        let (id, _) = serde_json::from_slice::<serde_json::Value>(&std::fs::read(&fixture).unwrap())
+            .ok()
+            .and_then(|v| Some((v.pointer("/info/id")?.as_str()?.to_string(), ())))
+            .unwrap();
+        let ws = workspace.to_string_lossy().into_owned();
+        opencode::import(&id, &fixture, &ws).unwrap();
+
+        let find = || opencode::scan().unwrap().into_iter().find(|s| s.id == id);
+        let session = find().expect("imported session not listed");
+
+        let handle = soft_delete(&session).unwrap();
+        assert!(find().is_none(), "session still listed after delete");
+        let deleted = list_deleted().unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert!(deleted[0].restorable);
+        assert_eq!(deleted[0].title, session.title);
+
+        undo(&handle).unwrap();
+        let back = find().expect("session not back after restore");
+        assert_eq!(back.workspace, session.workspace);
+        assert_eq!(back.message_count, session.message_count);
+        assert!(list_deleted().unwrap().is_empty());
+
+        // Restoring over a session that exists again must refuse, not overwrite.
+        assert!(opencode::import(&id, &fixture, &ws).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

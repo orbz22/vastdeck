@@ -1,6 +1,7 @@
 mod deleter;
 mod launcher;
 mod model;
+mod opencode;
 mod paths;
 mod registry;
 mod scanner;
@@ -97,6 +98,14 @@ fn list_sessions(state: tauri::State<AppState>) -> Result<SessionList, String> {
     for session in &mut sessions {
         session.live = live.get(&session.id).cloned();
     }
+    // A broken or locked OpenCode database must not take the Claude list
+    // down with it.
+    let mut opencode_sessions = opencode::scan().unwrap_or_default();
+    let opencode_live = opencode::live_sessions(&opencode_sessions);
+    for session in &mut opencode_sessions {
+        session.live = opencode_live.get(&session.id).cloned();
+    }
+    sessions.extend(opencode_sessions);
     // Most recent first; the UI re-sorts if the user asks for something else.
     sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     let stats = stats::workspace_stats().unwrap_or_default();
@@ -115,12 +124,20 @@ fn message_counts(state: tauri::State<AppState>) -> Result<HashMap<String, u32>,
 fn list_providers(state: tauri::State<AppState>) -> Result<Vec<ProviderInfo>, String> {
     let count = scanner::scan_all(&state.cache).map(|s| s.len()).unwrap_or(0);
     let installed = launcher::resolve_claude(&state.settings.get()).is_ok();
+    let opencode_count = opencode::count().unwrap_or(0);
     Ok(vec![
         ProviderInfo {
             id: "claude-code".into(),
             name: "Claude Code".into(),
             installed,
             session_count: count,
+        },
+        ProviderInfo {
+            id: opencode::PROVIDER_ID.into(),
+            name: "OpenCode".into(),
+            // Sessions left behind by an uninstalled CLI still deserve a list.
+            installed: opencode::resolve().is_ok() || opencode_count > 0,
+            session_count: opencode_count,
         },
         ProviderInfo {
             id: "codex".into(),
@@ -337,6 +354,11 @@ fn spawn_watcher(app: tauri::AppHandle) {
         {
             let _ = watcher.watch(&dir, RecursiveMode::Recursive);
         }
+        // OpenCode writes its database (and its WAL) in the top of this
+        // folder; the subfolders are snapshots and logs nobody lists.
+        if let Some(dir) = opencode::data_dir() {
+            let _ = watcher.watch(&dir, RecursiveMode::NonRecursive);
+        }
 
         let mut pending = false;
         loop {
@@ -359,6 +381,7 @@ fn spawn_watcher(app: tauri::AppHandle) {
 fn spawn_live_poller(app: tauri::AppHandle) {
     std::thread::spawn(move || {
         let mut previous: HashMap<String, String> = HashMap::new();
+        let mut previous_opencode: Vec<String> = Vec::new();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(1500));
             let current: HashMap<String, String> = registry::live_sessions()
@@ -366,8 +389,12 @@ fn spawn_live_poller(app: tauri::AppHandle) {
                 .into_iter()
                 .map(|(id, info)| (id, info.status))
                 .collect();
-            if current != previous {
+            // OpenCode sessions count as running while their terminal is
+            // open, which only the window titles tell.
+            let current_opencode = opencode::live_fingerprint();
+            if current != previous || current_opencode != previous_opencode {
                 previous = current;
+                previous_opencode = current_opencode;
                 let _ = app.emit("live-changed", ());
             }
         }

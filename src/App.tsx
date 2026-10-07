@@ -4,6 +4,7 @@ import { Menu } from "@tauri-apps/api/menu";
 import {
   api,
   modeLabel,
+  supportedMode,
   type DeletedHandle,
   type DeletedSession,
   type LaunchMode,
@@ -291,7 +292,7 @@ export default function App() {
       setConfirm({
         title: "Run without permission checks?",
         body:
-          "Claude will edit files and run commands in this workspace without asking. Vastdeck will not ask again for this workspace.",
+          "The agent will edit files and run commands in this workspace without asking. Vastdeck will not ask again for this workspace.",
         detail: session.workspace,
         confirmLabel: "Run anyway",
         tone: "warn",
@@ -337,7 +338,9 @@ export default function App() {
         title: permanent ? "Delete permanently?" : "Delete session?",
         body: permanent
           ? "The transcript will be removed outright. There is no other copy and no undo."
-          : "The transcript moves to ~/.claude/backups/vastdeck and can be restored.",
+          : session.provider === "opencode"
+            ? "The session is exported to ~/.claude/backups/vastdeck, then removed from OpenCode. It can be restored."
+            : "The transcript moves to ~/.claude/backups/vastdeck and can be restored.",
         detail: session.title ?? basename(session.workspace),
         confirmLabel: permanent ? "Delete forever" : "Delete",
         tone: permanent ? "danger" : "neutral",
@@ -373,7 +376,10 @@ export default function App() {
   );
 
   const defaultModeFor = (session: Session): LaunchMode =>
-    settings?.sessionModes?.[session.id] ?? settings?.defaultLaunchMode ?? "normal";
+    supportedMode(
+      session.provider,
+      settings?.sessionModes?.[session.id] ?? settings?.defaultLaunchMode ?? "normal",
+    );
 
   const renderRow = (session: Session, showWorkspace: boolean) => (
     <SessionRow
