@@ -54,6 +54,62 @@ export function normalizeWorkspace(path: string): string {
   return path.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
 }
 
+export interface WorkspaceGroup<T> {
+  workspace: string;
+  items: T[];
+  /** Workspaces that sit inside this one, nested the same way. */
+  children: WorkspaceGroup<T>[];
+  /** Newest `updatedAt` across this group and everything nested in it. */
+  latest: number;
+}
+
+/**
+ * Groups items by workspace and files each group under the nearest other
+ * workspace whose folder contains it, so `A\B` shows inside `A`. Groups at
+ * every level are ordered newest first.
+ */
+export function nestWorkspaces<T extends { workspace: string; updatedAt: number }>(
+  items: T[],
+): WorkspaceGroup<T>[] {
+  const byKey = new Map<string, WorkspaceGroup<T>>();
+  for (const item of items) {
+    const key = normalizeWorkspace(item.workspace);
+    const group = byKey.get(key);
+    if (group) {
+      group.items.push(item);
+      group.latest = Math.max(group.latest, item.updatedAt);
+    } else {
+      byKey.set(key, {
+        workspace: item.workspace,
+        items: [item],
+        children: [],
+        latest: item.updatedAt,
+      });
+    }
+  }
+
+  const roots: WorkspaceGroup<T>[] = [];
+  for (const [key, group] of byKey) {
+    let parent: WorkspaceGroup<T> | undefined;
+    for (let i = key.lastIndexOf("/"); i > 0 && !parent; i = key.lastIndexOf("/", i - 1)) {
+      parent = byKey.get(key.slice(0, i));
+    }
+    (parent ? parent.children : roots).push(group);
+  }
+
+  const order = (groups: WorkspaceGroup<T>[]): number => {
+    let latest = 0;
+    for (const group of groups) {
+      group.latest = Math.max(group.latest, order(group.children));
+      latest = Math.max(latest, group.latest);
+    }
+    groups.sort((a, b) => b.latest - a.latest);
+    return latest;
+  };
+  order(roots);
+  return roots;
+}
+
 /** Subsequence match, the same forgiving behaviour an editor's quick-open has. */
 export function fuzzyMatch(needle: string, haystack: string): boolean {
   if (!needle) return true;
