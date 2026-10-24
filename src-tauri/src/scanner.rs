@@ -48,7 +48,7 @@ struct CacheEntry {
 /// Bump whenever parsing changes what an entry holds: entries are keyed on the
 /// transcript's (mtime, size), so a session nobody touches again would keep
 /// serving what the old parser read from it forever.
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Cache {
@@ -173,7 +173,7 @@ fn scan_one(path: &Path, cache: &ScanCache) -> Result<Option<Session>> {
             let entry = CacheEntry {
                 mtime_ms,
                 size,
-                workspace: head.workspace.unwrap_or_default(),
+                workspace: pick_workspace(path, head.workspace, tail.cwd),
                 title: tail.title,
                 ai_title: tail.ai_title,
                 preview: tail.preview,
@@ -209,6 +209,32 @@ fn scan_one(path: &Path, cache: &ScanCache) -> Result<Option<Session>> {
         message_count: entry.message_count,
         live: None,
     }))
+}
+
+/// The directory a session belongs to now. `/cd` moves the transcript into the
+/// new directory's project folder but leaves the old `cwd` on the records
+/// written before it, so the first `cwd` alone can name a folder that is gone.
+/// The project folder is the directory name with every non-alphanumeric
+/// character turned into `-`; the latest `cwd` wins when it is the one that
+/// maps to it. Otherwise the first `cwd` stays, since a Bash `cd` also changes
+/// `cwd` without moving the session.
+fn pick_workspace(path: &Path, first: Option<String>, last: Option<String>) -> String {
+    let folder = path
+        .parent()
+        .and_then(Path::file_name)
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let maps_to_folder = |dir: &str| project_folder_name(dir) == folder;
+    match (first, last) {
+        (Some(first), Some(last)) if !maps_to_folder(&first) && maps_to_folder(&last) => last,
+        (first, last) => first.or(last).unwrap_or_default(),
+    }
+}
+
+fn project_folder_name(dir: &str) -> String {
+    dir.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
 }
 
 /// Just enough to describe a transcript that is not part of the live list —
@@ -306,6 +332,8 @@ struct Tail {
     ai_title: Option<String>,
     preview: Option<String>,
     permission_mode: Option<String>,
+    /// The last `cwd` recorded, which `/cd` changes.
+    cwd: Option<String>,
 }
 
 fn parse_tail(path: &Path, size: u64) -> Result<Tail> {
@@ -333,6 +361,9 @@ fn parse_tail(path: &Path, size: u64) -> Result<Tail> {
             let Ok(v) = serde_json::from_str::<Value>(line) else {
                 continue;
             };
+            if tail.cwd.is_none() {
+                tail.cwd = v.get("cwd").and_then(Value::as_str).map(str::to_string);
+            }
             match v.get("type").and_then(Value::as_str).unwrap_or("") {
                 "custom-title" if tail.custom_title.is_none() => {
                     tail.custom_title = v
@@ -362,6 +393,7 @@ fn parse_tail(path: &Path, size: u64) -> Result<Tail> {
                 _ => {}
             }
             if tail.custom_title.is_some()
+                && tail.cwd.is_some()
                 && tail.title.is_some()
                 && tail.preview.is_some()
                 && tail.permission_mode.is_some()
@@ -564,6 +596,18 @@ mod tests {
         assert_eq!(sessions.len(), again.len(), "cache changed the result");
         assert!(sessions.iter().all(|s| !s.workspace.is_empty()));
         assert!(cold.as_millis() < 3000, "cold scan too slow: {cold:?}");
+    }
+
+    #[test]
+    fn workspace_follows_cd_into_the_new_project_folder() {
+        let moved = Path::new(r"C:\p\C--Games-Switch\s.jsonl");
+        let first = Some(r"C:\Games\suyu".to_string());
+        let last = Some(r"C:\Games\Switch".to_string());
+        assert_eq!(pick_workspace(moved, first.clone(), last.clone()), r"C:\Games\Switch");
+
+        // A Bash `cd` changes `cwd` but leaves the transcript where it was.
+        let stayed = Path::new(r"C:\p\C--Games-suyu\s.jsonl");
+        assert_eq!(pick_workspace(stayed, first, last), r"C:\Games\suyu");
     }
 
     #[test]
