@@ -135,6 +135,24 @@ fn program_for(session: &Session, settings: &Settings) -> Result<PathBuf> {
     }
 }
 
+/// Variables a running Claude Code session sets for its own children. Vastdeck
+/// started from inside one inherits them and passes them on to every terminal
+/// it opens; `claude` then takes itself for a child session and stops saving
+/// its transcript. The launch scripts clear them first.
+const INHERITED_SESSION_VARS: [&str; 11] = [
+    "CLAUDECODE",
+    "CLAUDE_PID",
+    "CLAUDE_EFFORT",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_EXECPATH",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SSE_PORT",
+];
+
 fn write_cmd_script(session: &Session, program: &Path, mode: LaunchMode) -> Result<PathBuf> {
     let dir = scripts_dir()?;
     sweep_old_scripts(&dir);
@@ -148,9 +166,14 @@ fn write_cmd_script(session: &Session, program: &Path, mode: LaunchMode) -> Resu
 
     let body = format!(
         "@echo off\r\n\
+         {clear}\
          title {title}\r\n\
          cd /d \"{cwd}\"\r\n\
          \"{program}\" {args}\r\n",
+        clear = INHERITED_SESSION_VARS
+            .iter()
+            .map(|v| format!("set \"{v}=\"\r\n"))
+            .collect::<String>(),
         title = sanitize_title(display_name(session)),
         cwd = session.workspace,
         program = program.display(),
@@ -173,9 +196,14 @@ fn write_ps_script(session: &Session, program: &Path, mode: LaunchMode) -> Resul
         .join(" ");
 
     let body = format!(
-        "$Host.UI.RawUI.WindowTitle = {title}\r\n\
+        "{clear}\
+         $Host.UI.RawUI.WindowTitle = {title}\r\n\
          Set-Location -LiteralPath {cwd}\r\n\
          & {program} {args}\r\n",
+        clear = INHERITED_SESSION_VARS
+            .iter()
+            .map(|v| format!("Remove-Item Env:{v} -ErrorAction SilentlyContinue\r\n"))
+            .collect::<String>(),
         title = quote(&sanitize_title(display_name(session))),
         cwd = quote(&session.workspace),
         program = quote(&program.display().to_string()),
@@ -380,6 +408,7 @@ mod tests {
         // A title only ever becomes a console title; `;` would otherwise split a
         // Windows Terminal command line.
         assert!(!body.contains(';'), "title metacharacters leaked: {body}");
+        assert!(body.contains("set \"CLAUDE_CODE_CHILD_SESSION=\"\r\n"));
 
         let _ = std::fs::remove_file(file);
     }
@@ -396,6 +425,7 @@ mod tests {
             "workspace not quoted: {body}"
         );
         assert!(body.contains("'--permission-mode' 'plan'"));
+        assert!(body.contains("Remove-Item Env:CLAUDE_CODE_CHILD_SESSION -ErrorAction"));
 
         let _ = std::fs::remove_file(file);
     }
