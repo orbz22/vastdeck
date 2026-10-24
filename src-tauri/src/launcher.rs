@@ -10,6 +10,7 @@
 //! the `claude` call itself, and the terminal is handed only that clean path.
 
 use crate::model::{LaunchMode, Session};
+use crate::antigravity;
 use crate::codex;
 use crate::opencode;
 use crate::paths;
@@ -102,6 +103,11 @@ fn sanitize_title(raw: &str) -> String {
 }
 
 fn args_for(session: &Session, mode: LaunchMode) -> Result<Vec<String>> {
+    if session.provider == antigravity::PROVIDER_ID {
+        let mut args = vec!["--conversation".to_string(), session.id.clone()];
+        args.extend(antigravity_flags(mode)?.iter().map(|s| s.to_string()));
+        return Ok(args);
+    }
     if session.provider == codex::PROVIDER_ID {
         // Forking is its own subcommand in Codex, not a flag on resume.
         let command = if mode == LaunchMode::Fork { "fork" } else { "resume" };
@@ -148,10 +154,25 @@ fn codex_flags(mode: LaunchMode) -> &'static [&'static str] {
     }
 }
 
+/// `agy`'s spelling of each mode. It cannot branch a conversation off, so
+/// Fork is refused rather than quietly resuming the original.
+fn antigravity_flags(mode: LaunchMode) -> Result<&'static [&'static str]> {
+    Ok(match mode {
+        LaunchMode::Normal => &[],
+        LaunchMode::SkipPermissions => &["--dangerously-skip-permissions"],
+        LaunchMode::AcceptEdits => &["--mode", "accept-edits"],
+        LaunchMode::Plan => &["--mode", "plan"],
+        LaunchMode::Fork => return Err(anyhow!("Antigravity CLI has no fork")),
+    })
+}
+
 /// The CLI that resumes `session`.
 fn program_for(session: &Session, settings: &Settings) -> Result<PathBuf> {
     if session.provider == codex::PROVIDER_ID {
         return codex::resolve();
+    }
+    if session.provider == antigravity::PROVIDER_ID {
+        return antigravity::resolve();
     }
     if session.provider == opencode::PROVIDER_ID {
         opencode::resolve()
@@ -248,6 +269,8 @@ fn display_name(session: &Session) -> &str {
             "OpenCode"
         } else if session.provider == codex::PROVIDER_ID {
             "Codex"
+        } else if session.provider == antigravity::PROVIDER_ID {
+            "Antigravity"
         } else {
             "Claude Code"
         })
@@ -503,6 +526,25 @@ mod tests {
         );
         assert_eq!(args_for(&session, LaunchMode::Fork).unwrap()[2..], ["--fork"]);
         assert!(args_for(&session, LaunchMode::AcceptEdits).is_err());
+    }
+
+    #[test]
+    fn antigravity_sessions_resume_by_conversation() {
+        let mut session = fixture();
+        session.provider = antigravity::PROVIDER_ID.into();
+        let id = "7d7a05c1-c668-4ffc-947c-7ec039e5df98";
+        session.id = id.into();
+
+        assert_eq!(args_for(&session, LaunchMode::Normal).unwrap(), ["--conversation", id]);
+        assert_eq!(
+            args_for(&session, LaunchMode::AcceptEdits).unwrap()[2..],
+            ["--mode", "accept-edits"]
+        );
+        assert_eq!(
+            args_for(&session, LaunchMode::SkipPermissions).unwrap()[2..],
+            ["--dangerously-skip-permissions"]
+        );
+        assert!(args_for(&session, LaunchMode::Fork).is_err());
     }
 
     #[test]

@@ -17,7 +17,12 @@
 //! untouched. A soft delete archives the thread and leaves a small record in
 //! the backup folder so it shows in the Deleted view; a restore unarchives it,
 //! and purging the record deletes the thread from Codex for good.
+//!
+//! Antigravity's `agy` has no delete of its own, so its conversation files —
+//! never the index it shares with the IDE — move into the backup folder under
+//! `antigravity/`, laid out as they were, and a restore moves them back.
 
+use crate::antigravity;
 use crate::codex;
 use crate::model::{DeletedHandle, DeletedSession, Session};
 use crate::opencode;
@@ -33,9 +38,14 @@ const OPENCODE_EXPORT: &str = "opencode-session.json";
 /// What a Codex session's backup holds in place of a transcript: the thread
 /// stays in Codex's own archive, and this names it for the Deleted view.
 const CODEX_RECORD: &str = "codex-thread.json";
+/// Names an Antigravity conversation for the Deleted view; its files sit
+/// beside it under [`ANTIGRAVITY_FILES`].
+const ANTIGRAVITY_RECORD: &str = "antigravity-conversation.json";
+const ANTIGRAVITY_FILES: &str = "antigravity";
 
+/// A session the backup holds by name rather than as a transcript.
 #[derive(Debug, Serialize, Deserialize)]
-struct CodexRecord {
+struct SessionRecord {
     id: String,
     title: Option<String>,
     workspace: String,
@@ -64,6 +74,10 @@ impl Manifest {
 
     fn is_codex(&self) -> bool {
         self.provider.as_deref() == Some(codex::PROVIDER_ID)
+    }
+
+    fn is_antigravity(&self) -> bool {
+        self.provider.as_deref() == Some(antigravity::PROVIDER_ID)
     }
 }
 
@@ -112,7 +126,7 @@ fn soft_delete_opencode(session: &Session) -> Result<DeletedHandle> {
 
 fn soft_delete_codex(session: &Session) -> Result<DeletedHandle> {
     let backup = new_backup_dir(session)?;
-    let record = CodexRecord {
+    let record = SessionRecord {
         id: session.id.clone(),
         title: session.title.clone(),
         workspace: session.workspace.clone(),
@@ -140,12 +154,64 @@ fn soft_delete_codex(session: &Session) -> Result<DeletedHandle> {
     })
 }
 
+fn soft_delete_antigravity(session: &Session) -> Result<DeletedHandle> {
+    let home = antigravity::home().ok_or_else(|| anyhow!("no home folder"))?;
+    let backup = new_backup_dir(session)?;
+    let record = SessionRecord {
+        id: session.id.clone(),
+        title: session.title.clone(),
+        workspace: session.workspace.clone(),
+    };
+    std::fs::write(backup.join(ANTIGRAVITY_RECORD), serde_json::to_vec_pretty(&record)?)?;
+    let manifest = Manifest {
+        session_id: session.id.clone(),
+        original_path: session.path.clone(),
+        original_env_dir: None,
+        workspace: session.workspace.clone(),
+        deleted_at: chrono::Utc::now().timestamp_millis(),
+        provider: Some(antigravity::PROVIDER_ID.to_string()),
+    };
+    std::fs::write(backup.join(MANIFEST), serde_json::to_vec_pretty(&manifest)?)?;
+
+    let stored = backup.join(ANTIGRAVITY_FILES);
+    for (i, rel) in antigravity::owned_paths(&session.id).iter().enumerate() {
+        let from = home.join(rel);
+        if !from.exists() {
+            continue;
+        }
+        let to = stored.join(rel);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match move_path(&from, &to) {
+            Ok(()) => {}
+            // The conversation itself comes first: if it will not move — open
+            // in a running agy, say — nothing has been touched yet.
+            Err(err) if i == 0 => {
+                let _ = std::fs::remove_dir_all(&backup);
+                return Err(err);
+            }
+            // A sidecar left behind is harmless; the conversation is gone.
+            Err(_) => {}
+        }
+    }
+    Ok(DeletedHandle {
+        session_id: session.id.clone(),
+        backup_dir: Some(backup.to_string_lossy().into_owned()),
+        original_path: session.path.clone(),
+        original_env_dir: None,
+    })
+}
+
 pub fn soft_delete(session: &Session) -> Result<DeletedHandle> {
     if session.provider == opencode::PROVIDER_ID {
         return soft_delete_opencode(session);
     }
     if session.provider == codex::PROVIDER_ID {
         return soft_delete_codex(session);
+    }
+    if session.provider == antigravity::PROVIDER_ID {
+        return soft_delete_antigravity(session);
     }
     let transcript = PathBuf::from(&session.path);
     if !transcript.is_file() {
@@ -191,6 +257,28 @@ pub fn soft_delete(session: &Session) -> Result<DeletedHandle> {
 }
 
 pub fn hard_delete(session: &Session) -> Result<DeletedHandle> {
+    if session.provider == antigravity::PROVIDER_ID {
+        let home = antigravity::home().ok_or_else(|| anyhow!("no home folder"))?;
+        for (i, rel) in antigravity::owned_paths(&session.id).iter().enumerate() {
+            let path = home.join(rel);
+            let removed = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else if path.exists() {
+                std::fs::remove_file(&path)
+            } else {
+                Ok(())
+            };
+            if i == 0 {
+                removed?;
+            }
+        }
+        return Ok(DeletedHandle {
+            session_id: session.id.clone(),
+            backup_dir: None,
+            original_path: session.path.clone(),
+            original_env_dir: None,
+        });
+    }
     if session.provider == opencode::PROVIDER_ID || session.provider == codex::PROVIDER_ID {
         if session.provider == codex::PROVIDER_ID {
             codex::delete(&session.id)?;
@@ -249,8 +337,11 @@ pub fn list_deleted() -> Result<Vec<DeletedSession>> {
             continue;
         };
         let size = std::fs::metadata(&transcript).map(|m| m.len()).unwrap_or(0);
-        let meta = if manifest.as_ref().is_some_and(Manifest::is_codex) {
-            codex_record(&transcript).map(|record| scanner::QuickMeta {
+        let by_record = manifest
+            .as_ref()
+            .is_some_and(|m| m.is_codex() || m.is_antigravity());
+        let meta = if by_record {
+            session_record(&transcript).map(|record| scanner::QuickMeta {
                 workspace: Some(record.workspace),
                 title: record.title,
                 preview: None,
@@ -312,6 +403,29 @@ pub fn restore(backup_dir: &str) -> Result<()> {
     let manifest = read_manifest(&backup).ok_or_else(|| {
         anyhow!("this backup has no manifest, so its original location is unknown")
     })?;
+
+    if manifest.is_antigravity() {
+        let home = antigravity::home().ok_or_else(|| anyhow!("no home folder"))?;
+        if antigravity::conversation_exists(&manifest.session_id) {
+            return Err(anyhow!(
+                "Antigravity already has this conversation; restoring would overwrite it"
+            ));
+        }
+        let stored = backup.join(ANTIGRAVITY_FILES);
+        for rel in antigravity::owned_paths(&manifest.session_id) {
+            let from = stored.join(&rel);
+            if !from.exists() {
+                continue;
+            }
+            let to = home.join(&rel);
+            if let Some(parent) = to.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            move_path(&from, &to)?;
+        }
+        let _ = std::fs::remove_dir_all(&backup);
+        return Ok(());
+    }
 
     if manifest.is_codex() {
         codex::unarchive(&manifest.session_id)?;
@@ -391,9 +505,9 @@ fn read_manifest(dir: &Path) -> Option<Manifest> {
 }
 
 /// The conversation a backup holds: a Claude transcript, an OpenCode export,
-/// or the record of an archived Codex thread.
+/// or the record of an archived Codex thread or a moved Antigravity one.
 fn transcript_in(dir: &Path) -> Option<PathBuf> {
-    for held in [OPENCODE_EXPORT, CODEX_RECORD] {
+    for held in [OPENCODE_EXPORT, CODEX_RECORD, ANTIGRAVITY_RECORD] {
         let file = dir.join(held);
         if file.is_file() {
             return Some(file);
@@ -405,7 +519,7 @@ fn transcript_in(dir: &Path) -> Option<PathBuf> {
     })
 }
 
-fn codex_record(file: &Path) -> Option<CodexRecord> {
+fn session_record(file: &Path) -> Option<SessionRecord> {
     serde_json::from_slice(&std::fs::read(file).ok()?).ok()
 }
 
@@ -604,6 +718,43 @@ mod tests {
 
         // Restoring over a session that exists again must refuse, not overwrite.
         assert!(opencode::import(&id, &fixture, &ws).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Moves an Antigravity conversation out and back inside a throwaway copy
+    /// of the CLI folder:
+    /// `VASTDECK_ANTIGRAVITY_HOME=<copy> VASTDECK_ANTIGRAVITY_ID=<id>
+    /// cargo test -- --ignored antigravity_round_trip`
+    #[test]
+    #[ignore = "needs a copy of the Antigravity CLI folder"]
+    fn antigravity_round_trip() {
+        let home = PathBuf::from(std::env::var("VASTDECK_ANTIGRAVITY_HOME").unwrap());
+        let id = std::env::var("VASTDECK_ANTIGRAVITY_ID").unwrap();
+        let root = std::env::temp_dir().join("vastdeck-antigravity-round-trip");
+        let _ = std::fs::remove_dir_all(&root);
+        std::env::set_var("CLAUDE_CONFIG_DIR", root.join("claude"));
+
+        let find = || antigravity::scan().unwrap().into_iter().find(|s| s.id == id);
+        let session = find().expect("conversation not listed");
+        let present = |rel: &PathBuf| home.join(rel).exists();
+        let owned: Vec<PathBuf> = antigravity::owned_paths(&id)
+            .into_iter()
+            .filter(|rel| present(rel))
+            .collect();
+
+        let handle = soft_delete(&session).unwrap();
+        assert!(find().is_none(), "conversation still listed after delete");
+        assert!(owned.iter().all(|rel| !present(rel)), "files left behind");
+        let deleted = list_deleted().unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].title, session.title);
+        assert_eq!(deleted[0].workspace, session.workspace);
+
+        undo(&handle).unwrap();
+        assert!(find().is_some(), "conversation not back after restore");
+        assert!(owned.iter().all(present), "files not restored");
+        assert!(list_deleted().unwrap().is_empty());
 
         let _ = std::fs::remove_dir_all(&root);
     }

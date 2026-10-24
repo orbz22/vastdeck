@@ -1,3 +1,4 @@
+mod antigravity;
 mod codex;
 mod deleter;
 mod launcher;
@@ -16,6 +17,7 @@ use scanner::ScanCache;
 use serde::Serialize;
 use settings::{Settings, SettingsStore};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tauri::{Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
 
@@ -113,6 +115,12 @@ fn list_sessions(state: tauri::State<AppState>) -> Result<SessionList, String> {
         session.live = codex_live.get(&session.id).cloned();
     }
     sessions.extend(codex_sessions);
+    let mut antigravity_sessions = antigravity::scan().unwrap_or_default();
+    let antigravity_live = antigravity::live_sessions(&antigravity_sessions);
+    for session in &mut antigravity_sessions {
+        session.live = antigravity_live.get(&session.id).cloned();
+    }
+    sessions.extend(antigravity_sessions);
     // Most recent first; the UI re-sorts if the user asks for something else.
     sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     let stats = stats::workspace_stats().unwrap_or_default();
@@ -133,6 +141,7 @@ fn list_providers(state: tauri::State<AppState>) -> Result<Vec<ProviderInfo>, St
     let installed = launcher::resolve_claude(&state.settings.get()).is_ok();
     let opencode_count = opencode::count().unwrap_or(0);
     let codex_count = codex::count().unwrap_or(0);
+    let antigravity_count = antigravity::count().unwrap_or(0);
     Ok(vec![
         ProviderInfo {
             id: "claude-code".into(),
@@ -154,10 +163,10 @@ fn list_providers(state: tauri::State<AppState>) -> Result<Vec<ProviderInfo>, St
             session_count: codex_count,
         },
         ProviderInfo {
-            id: "antigravity".into(),
+            id: antigravity::PROVIDER_ID.into(),
             name: "Antigravity CLI".into(),
-            installed: false,
-            session_count: 0,
+            installed: antigravity::resolve().is_ok() || antigravity_count > 0,
+            session_count: antigravity_count,
         },
     ])
 }
@@ -372,27 +381,39 @@ fn spawn_watcher(app: tauri::AppHandle) {
         if let Some(dir) = codex::home().filter(|d| d.is_dir()) {
             let _ = watcher.watch(&dir, RecursiveMode::NonRecursive);
         }
+        // Antigravity's index sits in the top of its folder, beside a log.
+        if let Some(dir) = antigravity::home().filter(|d| d.is_dir()) {
+            let _ = watcher.watch(&dir, RecursiveMode::NonRecursive);
+        }
 
-        let codex_home = codex::home();
-        // Codex writes its logs database beside the thread one many times a
-        // second; only the thread database changes the list.
-        let codex_noise = |event: &notify::Result<notify::Event>| {
-            let (Some(home), Ok(event)) = (codex_home.as_deref(), event) else {
+        // Codex writes its logs database, and agy its log, beside the files
+        // that list sessions, many times a second; only those files matter.
+        let quiet: Vec<(PathBuf, &str)> = [
+            (codex::home(), "state_"),
+            (antigravity::home(), "conversation_summaries"),
+        ]
+        .into_iter()
+        .filter_map(|(home, prefix)| home.map(|h| (h, prefix)))
+        .collect();
+        let noise = |event: &notify::Result<notify::Event>| {
+            let Ok(event) = event else {
                 return false;
             };
             !event.paths.is_empty()
                 && event.paths.iter().all(|p| {
-                    p.parent() == Some(home)
-                        && !p
-                            .file_name()
-                            .is_some_and(|n| n.to_string_lossy().starts_with("state_"))
+                    quiet.iter().any(|(home, prefix)| {
+                        p.parent() == Some(home.as_path())
+                            && !p
+                                .file_name()
+                                .is_some_and(|n| n.to_string_lossy().starts_with(prefix))
+                    })
                 })
         };
 
         let mut pending = false;
         loop {
             match rx.recv_timeout(Duration::from_millis(600)) {
-                Ok(event) if codex_noise(&event) => {}
+                Ok(event) if noise(&event) => {}
                 Ok(_) => pending = true,
                 Err(RecvTimeoutError::Timeout) => {
                     if pending {
@@ -413,6 +434,7 @@ fn spawn_live_poller(app: tauri::AppHandle) {
         let mut previous: HashMap<String, String> = HashMap::new();
         let mut previous_opencode: Vec<String> = Vec::new();
         let mut previous_codex: Vec<String> = Vec::new();
+        let mut previous_antigravity: Vec<String> = Vec::new();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(1500));
             let current: HashMap<String, String> = registry::live_sessions()
@@ -424,13 +446,16 @@ fn spawn_live_poller(app: tauri::AppHandle) {
             // open, which only the window titles tell.
             let current_opencode = opencode::live_fingerprint();
             let current_codex = codex::live_fingerprint();
+            let current_antigravity = antigravity::live_fingerprint();
             if current != previous
                 || current_opencode != previous_opencode
                 || current_codex != previous_codex
+                || current_antigravity != previous_antigravity
             {
                 previous = current;
                 previous_opencode = current_opencode;
                 previous_codex = current_codex;
+                previous_antigravity = current_antigravity;
                 let _ = app.emit("live-changed", ());
             }
         }

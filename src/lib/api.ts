@@ -178,8 +178,22 @@ const CODEX_MODES: LaunchModeInfo[] = [
   { id: "fork", label: "Fork", hint: "codex fork" },
 ];
 
+/** `agy` has the same modes under `--mode`, and no fork. */
+const ANTIGRAVITY_MODES: LaunchModeInfo[] = [
+  { id: "normal", label: "Resume", hint: "Permission prompts stay on" },
+  {
+    id: "skipPermissions",
+    label: "Skip permissions",
+    hint: "--dangerously-skip-permissions",
+    danger: true,
+  },
+  { id: "acceptEdits", label: "Accept edits", hint: "--mode accept-edits" },
+  { id: "plan", label: "Plan", hint: "--mode plan" },
+];
+
 export function launchModesFor(provider: string): LaunchModeInfo[] {
   if (provider === "opencode") return OPENCODE_MODES;
+  if (provider === "antigravity") return ANTIGRAVITY_MODES;
   if (provider === "codex") return CODEX_MODES;
   return LAUNCH_MODES;
 }

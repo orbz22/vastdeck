@@ -337,7 +337,9 @@ export default function App() {
             ? "The session is exported to ~/.claude/backups/vastdeck, then removed from OpenCode. It can be restored."
             : session.provider === "codex"
               ? "The session moves to Codex's own archive and can be restored."
-              : "The transcript moves to ~/.claude/backups/vastdeck and can be restored.",
+              : session.provider === "antigravity"
+                ? "The conversation's files move to ~/.claude/backups/vastdeck and can be restored."
+                : "The transcript moves to ~/.claude/backups/vastdeck and can be restored.",
         detail: session.title ?? basename(session.workspace),
         confirmLabel: permanent ? "Delete forever" : "Delete",
         tone: permanent ? "danger" : "neutral",
