@@ -110,6 +110,38 @@ export function nestWorkspaces<T extends { workspace: string; updatedAt: number 
   return roots;
 }
 
+export interface Searchable {
+  id: string;
+  workspace: string;
+  title?: string | null;
+  aiTitle?: string | null;
+  preview?: string | null;
+  gitBranch?: string | null;
+}
+
+/**
+ * How well `query` matches: every word must appear whole in some field, and a
+ * word counts for the best field it is found in — the title above the last
+ * prompt above the folder, branch and id. Returns 0 when any word is missing.
+ */
+export function searchScore(query: string, item: Searchable): number {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return 1;
+  const fields: [string, number][] = [
+    [`${item.title ?? ""} ${item.aiTitle ?? ""}`, 4],
+    [item.preview ?? "", 2],
+    [`${item.workspace} ${item.gitBranch ?? ""} ${item.id}`, 1],
+  ];
+  const lowered = fields.map(([text, weight]) => [text.toLowerCase(), weight] as const);
+  let score = 0;
+  for (const word of words) {
+    const best = Math.max(0, ...lowered.filter(([t]) => t.includes(word)).map(([, w]) => w));
+    if (best === 0) return 0;
+    score += best;
+  }
+  return score;
+}
+
 /** Subsequence match, the same forgiving behaviour an editor's quick-open has. */
 export function fuzzyMatch(needle: string, haystack: string): boolean {
   if (!needle) return true;

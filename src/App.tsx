@@ -19,6 +19,7 @@ import {
   fuzzyMatch,
   nestWorkspaces,
   normalizeWorkspace,
+  searchScore,
   shortPath,
   type WorkspaceGroup,
 } from "./lib/format";
@@ -227,15 +228,17 @@ export default function App() {
   );
 
   const visible = useMemo(() => {
-    const filtered = sessions
-      .filter((s) => s.provider === provider)
-      .filter((s) =>
-        !query
-          ? true
-          : fuzzyMatch(query, `${s.title ?? ""} ${s.preview ?? ""} ${s.workspace}`),
-      );
+    const own = sessions.filter((s) => s.provider === provider);
+    // Whole-word matches first; a typo falls back to a fuzzy match on titles.
+    const scores = new Map(own.map((s) => [s.id, query ? searchScore(query, s) : 1]));
+    let filtered = own.filter((s) => scores.get(s.id)! > 0);
+    if (query && filtered.length === 0) {
+      filtered = own.filter((s) => fuzzyMatch(query, `${s.title ?? ""} ${s.aiTitle ?? ""}`));
+    }
     const sort = settings?.sort ?? "recent";
     return [...filtered].sort((a, b) => {
+      const rank = (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0);
+      if (rank !== 0) return rank;
       if (sort === "size") return b.sizeBytes - a.sizeBytes;
       if (sort === "name") {
         const an = a.title ?? basename(a.workspace);
