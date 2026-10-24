@@ -1,3 +1,4 @@
+mod codex;
 mod deleter;
 mod launcher;
 mod model;
@@ -106,6 +107,12 @@ fn list_sessions(state: tauri::State<AppState>) -> Result<SessionList, String> {
         session.live = opencode_live.get(&session.id).cloned();
     }
     sessions.extend(opencode_sessions);
+    let mut codex_sessions = codex::scan().unwrap_or_default();
+    let codex_live = codex::live_sessions(&codex_sessions);
+    for session in &mut codex_sessions {
+        session.live = codex_live.get(&session.id).cloned();
+    }
+    sessions.extend(codex_sessions);
     // Most recent first; the UI re-sorts if the user asks for something else.
     sessions.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     let stats = stats::workspace_stats().unwrap_or_default();
@@ -125,6 +132,7 @@ fn list_providers(state: tauri::State<AppState>) -> Result<Vec<ProviderInfo>, St
     let count = scanner::scan_all(&state.cache).map(|s| s.len()).unwrap_or(0);
     let installed = launcher::resolve_claude(&state.settings.get()).is_ok();
     let opencode_count = opencode::count().unwrap_or(0);
+    let codex_count = codex::count().unwrap_or(0);
     Ok(vec![
         ProviderInfo {
             id: "claude-code".into(),
@@ -140,10 +148,10 @@ fn list_providers(state: tauri::State<AppState>) -> Result<Vec<ProviderInfo>, St
             session_count: opencode_count,
         },
         ProviderInfo {
-            id: "codex".into(),
+            id: codex::PROVIDER_ID.into(),
             name: "Codex CLI".into(),
-            installed: false,
-            session_count: 0,
+            installed: codex::resolve().is_ok() || codex_count > 0,
+            session_count: codex_count,
         },
         ProviderInfo {
             id: "antigravity".into(),
@@ -359,10 +367,32 @@ fn spawn_watcher(app: tauri::AppHandle) {
         if let Some(dir) = opencode::data_dir() {
             let _ = watcher.watch(&dir, RecursiveMode::NonRecursive);
         }
+        // Codex's thread database sits in the top of its home, beside logs
+        // and caches in subfolders that change constantly.
+        if let Some(dir) = codex::home().filter(|d| d.is_dir()) {
+            let _ = watcher.watch(&dir, RecursiveMode::NonRecursive);
+        }
+
+        let codex_home = codex::home();
+        // Codex writes its logs database beside the thread one many times a
+        // second; only the thread database changes the list.
+        let codex_noise = |event: &notify::Result<notify::Event>| {
+            let (Some(home), Ok(event)) = (codex_home.as_deref(), event) else {
+                return false;
+            };
+            !event.paths.is_empty()
+                && event.paths.iter().all(|p| {
+                    p.parent() == Some(home)
+                        && !p
+                            .file_name()
+                            .is_some_and(|n| n.to_string_lossy().starts_with("state_"))
+                })
+        };
 
         let mut pending = false;
         loop {
             match rx.recv_timeout(Duration::from_millis(600)) {
+                Ok(event) if codex_noise(&event) => {}
                 Ok(_) => pending = true,
                 Err(RecvTimeoutError::Timeout) => {
                     if pending {
@@ -382,6 +412,7 @@ fn spawn_live_poller(app: tauri::AppHandle) {
     std::thread::spawn(move || {
         let mut previous: HashMap<String, String> = HashMap::new();
         let mut previous_opencode: Vec<String> = Vec::new();
+        let mut previous_codex: Vec<String> = Vec::new();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(1500));
             let current: HashMap<String, String> = registry::live_sessions()
@@ -392,9 +423,14 @@ fn spawn_live_poller(app: tauri::AppHandle) {
             // OpenCode sessions count as running while their terminal is
             // open, which only the window titles tell.
             let current_opencode = opencode::live_fingerprint();
-            if current != previous || current_opencode != previous_opencode {
+            let current_codex = codex::live_fingerprint();
+            if current != previous
+                || current_opencode != previous_opencode
+                || current_codex != previous_codex
+            {
                 previous = current;
                 previous_opencode = current_opencode;
+                previous_codex = current_codex;
                 let _ = app.emit("live-changed", ());
             }
         }

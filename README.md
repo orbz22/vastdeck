@@ -9,7 +9,7 @@
 Reopen one in a terminal, see which are running, delete the ones you are done
 with — and get them back if you change your mind.
 
-Claude Code and OpenCode today · Codex and Antigravity next
+Claude Code, OpenCode and Codex today · Antigravity next
 
 Windows · [Tauri 2](https://tauri.app) · MIT
 
@@ -31,9 +31,9 @@ Vastdeck reads those folders and shows you the whole thing: what the session was
 about, where it lives, when you last touched it, whether it is running right
 now. One click reopens it in a terminal.
 
-Claude Code and OpenCode are the CLIs it reads today. Session discovery, launch
-arguments and deletion all live in their own Rust modules, so Codex CLI and
-Antigravity CLI are a matter of adding to those seams rather than rewriting the
+Claude Code, OpenCode and Codex CLI are the CLIs it reads today. Session
+discovery, launch arguments and deletion all live in their own Rust modules, so
+Antigravity CLI is a matter of adding to those seams rather than rewriting the
 app.
 
 ## What it does
@@ -108,8 +108,8 @@ with Windows 11.
 ## Privacy
 
 Vastdeck reads and writes files in your own Claude Code directory, and reads
-OpenCode's database — changes to OpenCode sessions go through the `opencode`
-CLI itself. Nothing else is touched. There is no telemetry and no account. The only outbound request it ever
+OpenCode's and Codex's databases — changes to their sessions go through the
+`opencode` and `codex` CLIs themselves. Nothing else is touched. There is no telemetry and no account. The only outbound request it ever
 makes is the update check in Settings → System, and only when you press
 **Check**. Your conversations never leave the machine.
 
@@ -125,10 +125,16 @@ the database.
 | `~/.claude.json` → `projects[cwd]` | per-workspace cost and line counts |
 | `~/.local/share/opencode/opencode.db` | OpenCode sessions, opened read-only |
 | `OC \| <title>` window titles | which OpenCode sessions are running |
+| `~/.codex/state_<n>.sqlite` → `threads` | Codex sessions, opened read-only |
+| `codex.exe resume <id>` command lines | which Codex sessions are running |
 
 OpenCode deletes run `opencode export` into the same backup folder before
 `opencode session delete`, and a restore is `opencode import` run from the
 session's workspace. Vastdeck never writes to OpenCode's database itself.
+
+A Codex delete is `codex archive`, which Codex can undo on its own: restore
+runs `codex unarchive`, and only purging the backup — or a permanent delete —
+runs `codex delete`.
 
 Two details shape the design.
 

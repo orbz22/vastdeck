@@ -12,7 +12,13 @@
 //! OpenCode sessions live in a database rather than a file, so there is
 //! nothing to move: a soft delete saves `opencode export` output to the same
 //! backup folder before `opencode session delete`, and a restore imports it.
+//!
+//! Codex has an archive of its own, which hides a thread and can bring it back
+//! untouched. A soft delete archives the thread and leaves a small record in
+//! the backup folder so it shows in the Deleted view; a restore unarchives it,
+//! and purging the record deletes the thread from Codex for good.
 
+use crate::codex;
 use crate::model::{DeletedHandle, DeletedSession, Session};
 use crate::opencode;
 use crate::paths;
@@ -24,6 +30,16 @@ use std::path::{Path, PathBuf};
 const MANIFEST: &str = "vastdeck.json";
 /// The `opencode export` output inside an OpenCode session's backup.
 const OPENCODE_EXPORT: &str = "opencode-session.json";
+/// What a Codex session's backup holds in place of a transcript: the thread
+/// stays in Codex's own archive, and this names it for the Deleted view.
+const CODEX_RECORD: &str = "codex-thread.json";
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CodexRecord {
+    id: String,
+    title: Option<String>,
+    workspace: String,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +60,10 @@ struct Manifest {
 impl Manifest {
     fn is_opencode(&self) -> bool {
         self.provider.as_deref() == Some(opencode::PROVIDER_ID)
+    }
+
+    fn is_codex(&self) -> bool {
+        self.provider.as_deref() == Some(codex::PROVIDER_ID)
     }
 }
 
@@ -90,9 +110,42 @@ fn soft_delete_opencode(session: &Session) -> Result<DeletedHandle> {
     })
 }
 
+fn soft_delete_codex(session: &Session) -> Result<DeletedHandle> {
+    let backup = new_backup_dir(session)?;
+    let record = CodexRecord {
+        id: session.id.clone(),
+        title: session.title.clone(),
+        workspace: session.workspace.clone(),
+    };
+    std::fs::write(backup.join(CODEX_RECORD), serde_json::to_vec_pretty(&record)?)?;
+    let manifest = Manifest {
+        session_id: session.id.clone(),
+        original_path: session.path.clone(),
+        original_env_dir: None,
+        workspace: session.workspace.clone(),
+        deleted_at: chrono::Utc::now().timestamp_millis(),
+        provider: Some(codex::PROVIDER_ID.to_string()),
+    };
+    std::fs::write(backup.join(MANIFEST), serde_json::to_vec_pretty(&manifest)?)?;
+
+    if let Err(err) = codex::archive(&session.id) {
+        let _ = std::fs::remove_dir_all(&backup);
+        return Err(err);
+    }
+    Ok(DeletedHandle {
+        session_id: session.id.clone(),
+        backup_dir: Some(backup.to_string_lossy().into_owned()),
+        original_path: session.path.clone(),
+        original_env_dir: None,
+    })
+}
+
 pub fn soft_delete(session: &Session) -> Result<DeletedHandle> {
     if session.provider == opencode::PROVIDER_ID {
         return soft_delete_opencode(session);
+    }
+    if session.provider == codex::PROVIDER_ID {
+        return soft_delete_codex(session);
     }
     let transcript = PathBuf::from(&session.path);
     if !transcript.is_file() {
@@ -138,8 +191,12 @@ pub fn soft_delete(session: &Session) -> Result<DeletedHandle> {
 }
 
 pub fn hard_delete(session: &Session) -> Result<DeletedHandle> {
-    if session.provider == opencode::PROVIDER_ID {
-        opencode::delete(&session.id)?;
+    if session.provider == opencode::PROVIDER_ID || session.provider == codex::PROVIDER_ID {
+        if session.provider == codex::PROVIDER_ID {
+            codex::delete(&session.id)?;
+        } else {
+            opencode::delete(&session.id)?;
+        }
         return Ok(DeletedHandle {
             session_id: session.id.clone(),
             backup_dir: None,
@@ -192,7 +249,13 @@ pub fn list_deleted() -> Result<Vec<DeletedSession>> {
             continue;
         };
         let size = std::fs::metadata(&transcript).map(|m| m.len()).unwrap_or(0);
-        let meta = if manifest.as_ref().is_some_and(Manifest::is_opencode) {
+        let meta = if manifest.as_ref().is_some_and(Manifest::is_codex) {
+            codex_record(&transcript).map(|record| scanner::QuickMeta {
+                workspace: Some(record.workspace),
+                title: record.title,
+                preview: None,
+            })
+        } else if manifest.as_ref().is_some_and(Manifest::is_opencode) {
             opencode::export_meta(&transcript).map(|(title, workspace)| scanner::QuickMeta {
                 workspace,
                 title,
@@ -250,6 +313,12 @@ pub fn restore(backup_dir: &str) -> Result<()> {
         anyhow!("this backup has no manifest, so its original location is unknown")
     })?;
 
+    if manifest.is_codex() {
+        codex::unarchive(&manifest.session_id)?;
+        let _ = std::fs::remove_dir_all(&backup);
+        return Ok(());
+    }
+
     if manifest.is_opencode() {
         let export = backup.join(OPENCODE_EXPORT);
         if !export.is_file() {
@@ -295,6 +364,11 @@ pub fn purge(backup_dir: &str) -> Result<()> {
     if !backup.starts_with(&root) {
         return Err(anyhow!("refusing to delete outside the backup folder"));
     }
+    // A Codex backup is only a record; the thread itself waits in Codex's
+    // archive, and deleting the record for good has to delete that too.
+    if let Some(manifest) = read_manifest(&backup).filter(Manifest::is_codex) {
+        codex::delete_if_present(&manifest.session_id)?;
+    }
     if backup.is_dir() {
         std::fs::remove_dir_all(&backup)?;
     }
@@ -316,16 +390,23 @@ fn read_manifest(dir: &Path) -> Option<Manifest> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// The conversation a backup holds: a Claude transcript, or an OpenCode export.
+/// The conversation a backup holds: a Claude transcript, an OpenCode export,
+/// or the record of an archived Codex thread.
 fn transcript_in(dir: &Path) -> Option<PathBuf> {
-    let export = dir.join(OPENCODE_EXPORT);
-    if export.is_file() {
-        return Some(export);
+    for held in [OPENCODE_EXPORT, CODEX_RECORD] {
+        let file = dir.join(held);
+        if file.is_file() {
+            return Some(file);
+        }
     }
     std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
         let p = e.path();
         (p.extension().and_then(|x| x.to_str()) == Some("jsonl")).then_some(p)
     })
+}
+
+fn codex_record(file: &Path) -> Option<CodexRecord> {
+    serde_json::from_slice(&std::fs::read(file).ok()?).ok()
 }
 
 /// `rename` first; fall back to copy-then-remove when the two ends sit on
@@ -523,6 +604,45 @@ mod tests {
 
         // Restoring over a session that exists again must refuse, not overwrite.
         assert!(opencode::import(&id, &fixture, &ws).is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Runs the real `codex` CLI against a copy of a Codex home, never the
+    /// user's own. The copy's rollout paths must point inside it:
+    /// `VASTDECK_CODEX_FIXTURE=<codex home copy> VASTDECK_CODEX_THREAD=<id>
+    /// cargo test -- --ignored codex_round_trip`
+    #[test]
+    #[ignore = "runs the codex CLI; needs VASTDECK_CODEX_FIXTURE"]
+    fn codex_round_trip() {
+        let fixture = PathBuf::from(std::env::var("VASTDECK_CODEX_FIXTURE").unwrap());
+        let id = std::env::var("VASTDECK_CODEX_THREAD").unwrap();
+        let root = std::env::temp_dir().join("vastdeck-codex-round-trip");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("CODEX_HOME", &fixture);
+        std::env::set_var("CLAUDE_CONFIG_DIR", root.join("claude"));
+
+        let find = || codex::scan().unwrap().into_iter().find(|s| s.id == id);
+        let session = find().expect("thread not listed");
+
+        let handle = soft_delete(&session).unwrap();
+        assert!(find().is_none(), "thread still listed after delete");
+        let deleted = list_deleted().unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert!(deleted[0].restorable);
+        assert_eq!(deleted[0].title, session.title);
+        assert_eq!(deleted[0].workspace, session.workspace);
+
+        undo(&handle).unwrap();
+        assert!(find().is_some(), "thread not back after restore");
+        assert!(list_deleted().unwrap().is_empty());
+
+        // Purging the record deletes the archived thread from Codex too.
+        let handle = soft_delete(&session).unwrap();
+        purge(handle.backup_dir.as_deref().unwrap()).unwrap();
+        assert!(list_deleted().unwrap().is_empty());
+        assert!(codex::unarchive(&id).is_err(), "thread survived the purge");
 
         let _ = std::fs::remove_dir_all(&root);
     }
