@@ -17,8 +17,11 @@ import {
   basename,
   cost,
   fuzzyMatch,
+  nestWorkspaces,
   normalizeWorkspace,
+  searchScore,
   shortPath,
+  type WorkspaceGroup,
 } from "./lib/format";
 import TitleBar from "./components/TitleBar";
 import Sidebar, { type View } from "./components/Sidebar";
@@ -225,15 +228,17 @@ export default function App() {
   );
 
   const visible = useMemo(() => {
-    const filtered = sessions
-      .filter((s) => s.provider === provider)
-      .filter((s) =>
-        !query
-          ? true
-          : fuzzyMatch(query, `${s.title ?? ""} ${s.preview ?? ""} ${s.workspace}`),
-      );
+    const own = sessions.filter((s) => s.provider === provider);
+    // Whole-word matches first; a typo falls back to a fuzzy match on titles.
+    const scores = new Map(own.map((s) => [s.id, query ? searchScore(query, s) : 1]));
+    let filtered = own.filter((s) => scores.get(s.id)! > 0);
+    if (query && filtered.length === 0) {
+      filtered = own.filter((s) => fuzzyMatch(query, `${s.title ?? ""} ${s.aiTitle ?? ""}`));
+    }
     const sort = settings?.sort ?? "recent";
     return [...filtered].sort((a, b) => {
+      const rank = (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0);
+      if (rank !== 0) return rank;
       if (sort === "size") return b.sizeBytes - a.sizeBytes;
       if (sort === "name") {
         const an = a.title ?? basename(a.workspace);
@@ -246,17 +251,7 @@ export default function App() {
 
   const groups = useMemo(() => {
     if (!settings?.groupByWorkspace) return null;
-    const map = new Map<string, Session[]>();
-    for (const session of visible) {
-      const list = map.get(session.workspace);
-      if (list) list.push(session);
-      else map.set(session.workspace, [session]);
-    }
-    return [...map.entries()].sort(
-      (a, b) =>
-        Math.max(...b[1].map((s) => s.updatedAt)) -
-        Math.max(...a[1].map((s) => s.updatedAt)),
-    );
+    return nestWorkspaces(visible);
   }, [visible, settings?.groupByWorkspace]);
 
   const runLaunch = useCallback(
@@ -340,7 +335,11 @@ export default function App() {
           ? "The transcript will be removed outright. There is no other copy and no undo."
           : session.provider === "opencode"
             ? "The session is exported to ~/.claude/backups/vastdeck, then removed from OpenCode. It can be restored."
-            : "The transcript moves to ~/.claude/backups/vastdeck and can be restored.",
+            : session.provider === "codex"
+              ? "The session moves to Codex's own archive and can be restored."
+              : session.provider === "antigravity"
+                ? "The conversation's files move to ~/.claude/backups/vastdeck and can be restored."
+                : "The transcript moves to ~/.claude/backups/vastdeck and can be restored.",
         detail: session.title ?? basename(session.workspace),
         confirmLabel: permanent ? "Delete forever" : "Delete",
         tone: permanent ? "danger" : "neutral",
@@ -380,6 +379,36 @@ export default function App() {
       session.provider,
       settings?.sessionModes?.[session.id] ?? settings?.defaultLaunchMode ?? "normal",
     );
+
+  /** A workspace's sessions, then the workspaces inside its folder, indented. */
+  const renderGroup = (group: WorkspaceGroup<Session>, parent?: string) => {
+    const { workspace, items, children } = group;
+    const spend = cost(stats[normalizeWorkspace(workspace)]?.costUsd);
+    // Inside a parent the path is shown relative to it: `B` or `B\C`.
+    const where = parent
+      ? workspace.slice(parent.replace(/[\\/]+$/, "").length).replace(/^[\\/]+/, "")
+      : shortPath(workspace, 3);
+    return (
+      <section key={workspace} className={parent ? "mt-1 ml-3 border-l border-line pl-1" : "mb-3"}>
+        <div className="flex items-baseline gap-2 px-3 pt-2 pb-1">
+          <h2 className="truncate text-[12px] text-ink" title={workspace}>
+            {basename(workspace)}
+          </h2>
+          <span className="truncate font-mono text-[10.5px] text-faint" title={workspace}>
+            {where}
+          </span>
+          <span className="ml-auto flex shrink-0 items-baseline gap-2 text-[11px] tabular-nums text-faint">
+            {spend && (
+              <span title="Total spend recorded for this workspace">{spend}</span>
+            )}
+            <span>{items.length}</span>
+          </span>
+        </div>
+        {items.map((s) => renderRow(s, false))}
+        {children.map((child) => renderGroup(child, workspace))}
+      </section>
+    );
+  };
 
   const renderRow = (session: Session, showWorkspace: boolean) => (
     <SessionRow
@@ -489,33 +518,7 @@ export default function App() {
                 />
               )
             ) : groups ? (
-              groups.map(([workspace, items]) => {
-                const spend = cost(stats[normalizeWorkspace(workspace)]?.costUsd);
-                return (
-                  <section key={workspace} className="mb-3">
-                    <div className="flex items-baseline gap-2 px-3 pt-2 pb-1">
-                      <h2 className="truncate text-[12px] text-ink" title={workspace}>
-                        {basename(workspace)}
-                      </h2>
-                      <span
-                        className="truncate font-mono text-[10.5px] text-faint"
-                        title={workspace}
-                      >
-                        {shortPath(workspace, 3)}
-                      </span>
-                      <span className="ml-auto flex shrink-0 items-baseline gap-2 text-[11px] tabular-nums text-faint">
-                        {spend && (
-                          <span title="Total spend recorded for this workspace">
-                            {spend}
-                          </span>
-                        )}
-                        <span>{items.length}</span>
-                      </span>
-                    </div>
-                    {items.map((s) => renderRow(s, false))}
-                  </section>
-                );
-              })
+              groups.map((group) => renderGroup(group))
             ) : (
               visible.map((s) => renderRow(s, true))
             )}

@@ -10,6 +10,8 @@
 //! the `claude` call itself, and the terminal is handed only that clean path.
 
 use crate::model::{LaunchMode, Session};
+use crate::antigravity;
+use crate::codex;
 use crate::opencode;
 use crate::paths;
 use crate::settings::{Settings, TerminalChoice};
@@ -101,6 +103,19 @@ fn sanitize_title(raw: &str) -> String {
 }
 
 fn args_for(session: &Session, mode: LaunchMode) -> Result<Vec<String>> {
+    if session.provider == antigravity::PROVIDER_ID {
+        let mut args = vec!["--conversation".to_string(), session.id.clone()];
+        args.extend(antigravity_flags(mode)?.iter().map(|s| s.to_string()));
+        return Ok(args);
+    }
+    if session.provider == codex::PROVIDER_ID {
+        // Forking is its own subcommand in Codex, not a flag on resume.
+        let command = if mode == LaunchMode::Fork { "fork" } else { "resume" };
+        let mut args: Vec<String> = codex_flags(mode).iter().map(|s| s.to_string()).collect();
+        args.insert(0, command.to_string());
+        args.push(session.id.clone());
+        return Ok(args);
+    }
     if session.provider == opencode::PROVIDER_ID {
         let mut args = vec!["--session".to_string(), session.id.clone()];
         args.extend(opencode_flags(mode)?.iter().map(|s| s.to_string()));
@@ -126,8 +141,39 @@ fn opencode_flags(mode: LaunchMode) -> Result<&'static [&'static str]> {
     })
 }
 
+/// Codex's spelling of each mode, as sandbox and approval settings: edits
+/// inside the workspace go through unasked under `workspace-write`, and a
+/// `read-only` sandbox is the nearest thing to planning without changing
+/// anything.
+fn codex_flags(mode: LaunchMode) -> &'static [&'static str] {
+    match mode {
+        LaunchMode::Normal | LaunchMode::Fork => &[],
+        LaunchMode::SkipPermissions => &["--dangerously-bypass-approvals-and-sandbox"],
+        LaunchMode::AcceptEdits => &["--sandbox", "workspace-write", "--ask-for-approval", "on-request"],
+        LaunchMode::Plan => &["--sandbox", "read-only"],
+    }
+}
+
+/// `agy`'s spelling of each mode. It cannot branch a conversation off, so
+/// Fork is refused rather than quietly resuming the original.
+fn antigravity_flags(mode: LaunchMode) -> Result<&'static [&'static str]> {
+    Ok(match mode {
+        LaunchMode::Normal => &[],
+        LaunchMode::SkipPermissions => &["--dangerously-skip-permissions"],
+        LaunchMode::AcceptEdits => &["--mode", "accept-edits"],
+        LaunchMode::Plan => &["--mode", "plan"],
+        LaunchMode::Fork => return Err(anyhow!("Antigravity CLI has no fork")),
+    })
+}
+
 /// The CLI that resumes `session`.
 fn program_for(session: &Session, settings: &Settings) -> Result<PathBuf> {
+    if session.provider == codex::PROVIDER_ID {
+        return codex::resolve();
+    }
+    if session.provider == antigravity::PROVIDER_ID {
+        return antigravity::resolve();
+    }
     if session.provider == opencode::PROVIDER_ID {
         opencode::resolve()
     } else {
@@ -221,6 +267,10 @@ fn display_name(session: &Session) -> &str {
         .or(session.title.as_deref())
         .unwrap_or(if session.provider == opencode::PROVIDER_ID {
             "OpenCode"
+        } else if session.provider == codex::PROVIDER_ID {
+            "Codex"
+        } else if session.provider == antigravity::PROVIDER_ID {
+            "Antigravity"
         } else {
             "Claude Code"
         })
@@ -476,6 +526,44 @@ mod tests {
         );
         assert_eq!(args_for(&session, LaunchMode::Fork).unwrap()[2..], ["--fork"]);
         assert!(args_for(&session, LaunchMode::AcceptEdits).is_err());
+    }
+
+    #[test]
+    fn antigravity_sessions_resume_by_conversation() {
+        let mut session = fixture();
+        session.provider = antigravity::PROVIDER_ID.into();
+        let id = "7d7a05c1-c668-4ffc-947c-7ec039e5df98";
+        session.id = id.into();
+
+        assert_eq!(args_for(&session, LaunchMode::Normal).unwrap(), ["--conversation", id]);
+        assert_eq!(
+            args_for(&session, LaunchMode::AcceptEdits).unwrap()[2..],
+            ["--mode", "accept-edits"]
+        );
+        assert_eq!(
+            args_for(&session, LaunchMode::SkipPermissions).unwrap()[2..],
+            ["--dangerously-skip-permissions"]
+        );
+        assert!(args_for(&session, LaunchMode::Fork).is_err());
+    }
+
+    #[test]
+    fn codex_sessions_resume_or_fork_by_subcommand() {
+        let mut session = fixture();
+        session.provider = codex::PROVIDER_ID.into();
+        let id = "019dc7aa-3837-7d73-86ad-367dc86d2abd";
+        session.id = id.into();
+
+        assert_eq!(args_for(&session, LaunchMode::Normal).unwrap(), ["resume", id]);
+        assert_eq!(args_for(&session, LaunchMode::Fork).unwrap(), ["fork", id]);
+        assert_eq!(
+            args_for(&session, LaunchMode::Plan).unwrap(),
+            ["resume", "--sandbox", "read-only", id]
+        );
+        assert_eq!(
+            args_for(&session, LaunchMode::SkipPermissions).unwrap(),
+            ["resume", "--dangerously-bypass-approvals-and-sandbox", id]
+        );
     }
 
     #[test]

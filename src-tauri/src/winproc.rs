@@ -250,6 +250,85 @@ mod imp {
         list
     }
 
+    /// Pid and command line of every running process whose image is `exe`
+    /// (compared case-insensitively). A process that will not open — another
+    /// user's, or one exiting — is skipped.
+    pub fn processes_named(exe: &str) -> Vec<(u32, String)> {
+        let mut pids = Vec::new();
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snapshot.is_null() {
+                return Vec::new();
+            }
+            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            if Process32FirstW(snapshot, &mut entry) != 0 {
+                loop {
+                    let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(0);
+                    let name = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                    if name.eq_ignore_ascii_case(exe) {
+                        pids.push(entry.th32ProcessID);
+                    }
+                    if Process32NextW(snapshot, &mut entry) == 0 {
+                        break;
+                    }
+                }
+            }
+            CloseHandle(snapshot);
+        }
+        pids.into_iter()
+            .filter_map(|pid| command_line(pid).map(|line| (pid, line)))
+            .collect()
+    }
+
+    /// `ProcessCommandLineInformation` (Windows 8.1+) hands back the command
+    /// line as a `UNICODE_STRING` followed by its characters, without reading
+    /// the other process's memory.
+    fn command_line(pid: u32) -> Option<String> {
+        use windows_sys::Wdk::System::Threading::{
+            NtQueryInformationProcess, ProcessCommandLineInformation,
+        };
+        use windows_sys::Win32::Foundation::UNICODE_STRING;
+        unsafe {
+            let handle: HANDLE = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return None;
+            }
+            let mut needed = 0u32;
+            NtQueryInformationProcess(
+                handle,
+                ProcessCommandLineInformation,
+                std::ptr::null_mut(),
+                0,
+                &mut needed,
+            );
+            let mut line = None;
+            if needed as usize >= std::mem::size_of::<UNICODE_STRING>() {
+                // u64 words keep the buffer aligned for the struct at its head.
+                let mut buf = vec![0u64; (needed as usize).div_ceil(8)];
+                let status = NtQueryInformationProcess(
+                    handle,
+                    ProcessCommandLineInformation,
+                    buf.as_mut_ptr().cast(),
+                    needed,
+                    &mut needed,
+                );
+                if status >= 0 {
+                    let text = &*(buf.as_ptr() as *const UNICODE_STRING);
+                    if !text.Buffer.is_null() {
+                        let chars = std::slice::from_raw_parts(
+                            text.Buffer,
+                            text.Length as usize / 2,
+                        );
+                        line = Some(String::from_utf16_lossy(chars));
+                    }
+                }
+            }
+            CloseHandle(handle);
+            line
+        }
+    }
+
     fn window_title(hwnd: HWND) -> Option<String> {
         unsafe {
             let len = GetWindowTextLengthW(hwnd);
@@ -303,9 +382,12 @@ mod imp {
     pub fn titled_windows() -> Vec<(u32, String)> {
         Vec::new()
     }
+    pub fn processes_named(_exe: &str) -> Vec<(u32, String)> {
+        Vec::new()
+    }
 }
 
-pub use imp::{focus_window_for_pid, is_alive, titled_windows};
+pub use imp::{focus_window_for_pid, is_alive, processes_named, titled_windows};
 
 #[cfg(test)]
 mod tests {

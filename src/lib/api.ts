@@ -164,8 +164,38 @@ const OPENCODE_MODES: LaunchModeInfo[] = [
   { id: "fork", label: "Fork", hint: "--fork" },
 ];
 
+/** Codex sets the same modes through its sandbox and approval policy. */
+const CODEX_MODES: LaunchModeInfo[] = [
+  { id: "normal", label: "Resume", hint: "Permission prompts stay on" },
+  {
+    id: "skipPermissions",
+    label: "Skip permissions",
+    hint: "--dangerously-bypass-approvals-and-sandbox",
+    danger: true,
+  },
+  { id: "acceptEdits", label: "Accept edits", hint: "--sandbox workspace-write" },
+  { id: "plan", label: "Plan", hint: "--sandbox read-only" },
+  { id: "fork", label: "Fork", hint: "codex fork" },
+];
+
+/** `agy` has the same modes under `--mode`, and no fork. */
+const ANTIGRAVITY_MODES: LaunchModeInfo[] = [
+  { id: "normal", label: "Resume", hint: "Permission prompts stay on" },
+  {
+    id: "skipPermissions",
+    label: "Skip permissions",
+    hint: "--dangerously-skip-permissions",
+    danger: true,
+  },
+  { id: "acceptEdits", label: "Accept edits", hint: "--mode accept-edits" },
+  { id: "plan", label: "Plan", hint: "--mode plan" },
+];
+
 export function launchModesFor(provider: string): LaunchModeInfo[] {
-  return provider === "opencode" ? OPENCODE_MODES : LAUNCH_MODES;
+  if (provider === "opencode") return OPENCODE_MODES;
+  if (provider === "antigravity") return ANTIGRAVITY_MODES;
+  if (provider === "codex") return CODEX_MODES;
+  return LAUNCH_MODES;
 }
 
 /** `mode`, or plain resume when this provider cannot run it. */
